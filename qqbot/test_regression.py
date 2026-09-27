@@ -143,11 +143,14 @@ async def fake_call(action, params=None, timeout=20):
     return {"status": "ok", "retcode": 0, "data": {"tid": "t"}, "echo": "x"}
 
 
-async def fake_gen(intent, life=None, purpose="group"):
+async def fake_gen(intent, life=None, purpose="group", art=None):
     """假出图：记下用途、返回成功结果。
 
     注意要打的是 `generate_outcome`（结构化返回）而不是 `generate` ——
     后者只是它的薄包装，真流程走的是 outcome 那条路。
+
+    `art` 是这一轮角色卡的生图字段（新签名带过来的），假桩收下但不用 ——
+    真拼提示词那步在 SD.assemble 里，由【38】单独测。
     """
     made.append(purpose)
     p = str(BASE_DIR / "generated" / "fake.png")
@@ -3141,10 +3144,10 @@ async def main():
     _S35 = bot.SDGEN
     _real35 = (_S35.state_path, _S35.dir, _S35.enable, _S35._draw_locked)
 
-    async def _fail_draw35(intent, life=None, purpose="group"):
+    async def _fail_draw35(intent, life=None, purpose="group", art=None):
         return bot.GenOutcome(ok=False, reason="failed", detail="假装失败")
 
-    async def _ok_draw35(intent, life=None, purpose="group"):
+    async def _ok_draw35(intent, life=None, purpose="group", art=None):
         _S35.dir.mkdir(parents=True, exist_ok=True)
         p = str(_S35.dir / "ok.png")
         pathlib.Path(p).write_bytes(b"png")
@@ -3174,7 +3177,7 @@ async def main():
               f"outcome=ok:{_out35.ok} reason:{_out35.reason} detail:{_out35.detail}")
 
         # 抛异常也要退还（finally 出口）
-        def _boom35(intent, life=None, purpose="group"):
+        def _boom35(intent, life=None, purpose="group", art=None):
             raise RuntimeError("模拟内部炸了")
         _S35._draw_locked = _boom35
         _b2 = len(_S35.state["group"])
@@ -3460,6 +3463,24 @@ async def main():
     check("build_system 真的读到了角色卡",
           _pf38["persona"][:20] in bot.build_system(True, bot.LIFE.current(), 999, 10001),
           "群聊提示词里没出现卡里的 persona")
+
+    # 生图那条线：形象必须能从当前会话那张卡出 —— 这是"换张卡就换个人"的关键
+    _art38 = bot.PERSONA.art_fields("")
+    _art_keys = ("character_tags", "solo_prefix", "duo_prefix", "ban_solo",
+                 "ban_duo", "ban_scenery", "size")
+    check("生图字段也能从角色卡取（形象串 / 数量词 / 禁用词 / 尺寸）",
+          all(_art38.get(k) for k in _art_keys),
+          f"缺：{[k for k in _art_keys if not _art38.get(k)]}")
+    _pos38, _neg38, _w38, _h38 = bot.SDGEN.assemble(
+        {"mode": "solo", "scene": "sitting on the windowsill"},
+        {"character_tags": "CARD_TAGS_PROBE", "solo_prefix": "1girl, solo",
+         "ban_solo": "2girls", "size": {"solo": [512, 768]}})
+    check("按卡画：卡里的形象串进了正面提示词", "CARD_TAGS_PROBE" in _pos38, _pos38[:90])
+    check("按卡画：尺寸也按卡里的来", (_w38, _h38) == (512, 768), f"{_w38}x{_h38}")
+    check("按卡画：禁用词同样按卡", "2girls" in _neg38, _neg38[:90])
+    _pos38b, _, _w38b, _ = bot.SDGEN.assemble({"mode": "solo", "scene": "x"})
+    check("不传卡时落回默认卡的形象", _art38["character_tags"] in _pos38b)
+    check("不传卡时尺寸也落回默认卡", _w38b == _art38["size"]["solo"][0], str(_w38b))
 
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()

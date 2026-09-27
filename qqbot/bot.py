@@ -2792,7 +2792,27 @@ class SD:
         return {"mode": "scenery", "scene": (intent or "").strip(),
                 "other": "", "negative_extra": ""}
 
-    def assemble(self, pick: dict) -> tuple[str, str, int, int]:
+    def _art_of(self, art: dict | None) -> dict:
+        """把角色卡的 art 字段映射成 assemble 要用的那份，缺的落回启动时读到的值。
+
+        两边名字不一样是历史原因（卡里叫 character_tags / other_person / size，
+        SD 内部叫 char_tags / other_hint / sizes），映射只在这一处做。
+        """
+        a = {"char_tags": self.char_tags, "solo_prefix": self.solo_prefix,
+             "duo_prefix": self.duo_prefix, "other_hint": self.other_hint,
+             "ban_solo": self.ban_solo, "ban_duo": self.ban_duo,
+             "ban_scenery": self.ban_scenery, "sizes": self.sizes}
+        if art:
+            for src, dst in (("character_tags", "char_tags"), ("other_person", "other_hint"),
+                             ("size", "sizes")):
+                if art.get(src):
+                    a[dst] = art[src]
+            for k in ("solo_prefix", "duo_prefix", "ban_solo", "ban_duo", "ban_scenery"):
+                if art.get(k):
+                    a[k] = art[k]
+        return a
+
+    def assemble(self, pick: dict, art: dict | None = None) -> tuple[str, str, int, int]:
         """拼最终提示词。**外貌只从这里出** —— 这是"每张图里是同一个人"的唯一保证。
 
         三种模式拼法不同：
@@ -2800,22 +2820,30 @@ class SD:
           · duo     : 质量 + 2girls + **她的固定形象** + 对方（要求明显不同）+ 场景
           · scenery : 质量 + 场景（负面里把所有人相关词全禁掉）
 
+        `art` 传这一轮生效的那张角色卡的生图字段（persona.art_fields(会话键)）；
+        不传就用启动时从配置读到的那份。**当前是哪张卡，画出来就是哪个人** ——
+        这条通了之后，"换人设要重启" 才真正取消。宽高在同一次调用里定下来，
+        不存在"出图途中尺寸被换掉"的问题。
+
         返回 (正面, 负面, 宽, 高)。宽高按模式取 —— SDXL 原生是 1024，
         低于它最容易出多余/错乱肢体（原来写死 768×768 就是"崩"的原因之一）。
         """
+        # 没点名会话就用默认卡：这样"她自己发说说配图"那条路也走卡，不会和聊天里画出来的
+        # 不是同一个人。卡里没写的字段再落回启动时读到的配置值（见 _art_of）。
+        a = self._art_of(art if art is not None else PERSONA.art_fields(""))
         mode = str(pick.get("mode") or "solo")
         scene = str(pick.get("scene") or "").strip()
         if mode == "scenery":
             parts = [self.quality, scene]
-            neg = [self.negative, self.ban_scenery]
+            neg = [self.negative, a["ban_scenery"]]
         elif mode == "duo":
-            parts = [self.quality, self.duo_prefix, self.char_tags,
-                     self.other_hint, str(pick.get("other") or "").strip(), scene]
-            neg = [self.negative, self.ban_duo]
+            parts = [self.quality, a["duo_prefix"], a["char_tags"],
+                     a["other_hint"], str(pick.get("other") or "").strip(), scene]
+            neg = [self.negative, a["ban_duo"]]
         else:
             mode = "solo"
-            parts = [self.quality, self.solo_prefix, self.char_tags, scene]
-            neg = [self.negative, self.ban_solo]
+            parts = [self.quality, a["solo_prefix"], a["char_tags"], scene]
+            neg = [self.negative, a["ban_solo"]]
         extra = str(pick.get("negative_extra") or "").strip()
         if extra:
             neg.append(extra)
@@ -2823,7 +2851,7 @@ class SD:
         def _join(xs) -> str:
             return ", ".join(s.strip() for s in xs if s and s.strip())
 
-        wh = self.sizes.get(mode) or [1024, 1024]
+        wh = a["sizes"].get(mode) or [1024, 1024]
         return _join(parts), _join(neg), int(wh[0]), int(wh[1])
 
     # ── 出图（HTTP 交互全部交给 imagegen，这里只剩编排、配额与落盘） ──
@@ -2831,9 +2859,10 @@ class SD:
     def reload(self, cfg: dict | None = None) -> list[str]:
         """从配置重读「跟后端绑」的那部分（开关 / 地址 / 超时）。
 
-        ⚠️ 刻意**不重读角色字段**（char_tags / sizes / *_prefix）——
-        它们决定"这张画成什么样"，出图途中被换掉会让同一轮的尺寸变来变去，很难查。
-        角色字段只在进程启动时读一次；换人设请重启。
+        角色字段（char_tags / sizes / *_prefix）**不在这里读**：它们现在由
+        assemble() 每次从当前会话那张角色卡取（persona.art_fields(会话键)），
+        所以换人设、换群的人设都不用重启 —— reload 里这份只是"卡里没写时的兜底"。
+        宽高在同一次 assemble() 调用里定下来，不存在"出图途中尺寸被换掉"。
 
         为什么必须有这个方法：`self.enable` 是 `__init__` 里一次性读的，
         前端把「生图总闸」拨到 false 若不重读，开关**看着生效实际不生效**，且毫无报错。
@@ -2871,8 +2900,12 @@ class SD:
                                         enabled=True, has_intent=True)
 
     async def generate_outcome(self, intent: str, life: dict | None = None,
-                               purpose: str = "group") -> GenOutcome:
-        """出图并返回**结构化结果**（含失败原因，供提示与管理员通知用）。"""
+                               purpose: str = "group", art: dict | None = None) -> GenOutcome:
+        """出图并返回**结构化结果**（含失败原因，供提示与管理员通知用）。
+
+        `art`：这一轮生效的那张角色卡的生图字段（persona.art_fields(会话键)），
+        决定画出来的是谁。不传就用启动时读到的那份。
+        """
         if not self.enable or not (intent or "").strip():
             if not self.enable:
                 return GenOutcome(ok=False, reason=REASON_DISABLED, detail="生图总闸关着")
@@ -2888,7 +2921,7 @@ class SD:
             self.mark_drawn(purpose)          # 先占住，别让并发的请求挤进来
             ok = False
             try:
-                outcome = await self._draw_locked(intent, life, purpose)
+                outcome = await self._draw_locked(intent, life, purpose, art)
                 ok = outcome.ok
                 return outcome
             finally:
@@ -2904,10 +2937,10 @@ class SD:
         return out.path or None
 
     async def _draw_locked(self, intent: str, life: dict | None = None,
-                           purpose: str = "group") -> GenOutcome:
-        """真正的出图流程（调用方已持锁并占好额度）。"""
+                           purpose: str = "group", art: dict | None = None) -> GenOutcome:
+        """真正的出图流程（调用方已持锁并占好额度）。`art` 见 assemble()。"""
         pick = await self.compose(intent, life)
-        pos, neg, w, h = self.assemble(pick)
+        pos, neg, w, h = self.assemble(pick, art)
         self.dir.mkdir(parents=True, exist_ok=True)
         req = GenRequest(prompt=pos, negative=neg, width=w, height=h,
                          params=dict(self.body_extra), purpose=purpose,
@@ -6217,7 +6250,7 @@ async def apply_reply_tags(key: str, ask: list, reply: str,
     read_tags = " ".join(m.group(0) for m in QZONE_READ_TAG.finditer(text))
     if QZONE_TAG.search(text) or DRAW_TAG.search(text):
         text, image = await handle_qzone_reply(
-            QZONE_READ_TAG.sub("", text), life, say=say, purpose=purpose)
+            QZONE_READ_TAG.sub("", text), life, say=say, purpose=purpose, skey=key)
     if read_tags:
         text = (text + "\n" + read_tags).strip()
 
@@ -6962,12 +6995,16 @@ def split_comment(raw: str) -> tuple[str, str]:
 
 
 async def handle_qzone_reply(reply: str, life: dict | None = None,
-                             say=None, purpose: str = "group") -> tuple[str, str | None]:
+                             say=None, purpose: str = "group",
+                             skey: str = "") -> tuple[str, str | None]:
     """处理 [画图:描述] 与 [说说:文字]。
 
     画图 + 说说 -> 配图发到 QQ 空间
     只有画图    -> 图直接发到当前会话（第二个返回值是图片路径，交给 send 发出去）
     只有说说    -> 纯文字发空间
+
+    `skey`：当前会话键。画出来的长相按它选角色卡 —— 群里绑了别的卡，
+    这个群里画的就是那张卡的人（所以"按群设人设"连形象一起换）。
     """
     draw = DRAW_TAG.search(reply)
     caption = QZONE_TAG.search(reply)
@@ -7004,7 +7041,9 @@ async def handle_qzone_reply(reply: str, life: dict | None = None,
             await say(line)
 
     # ③ 真去画。失败时也必须给用户一句 + 通知管理员（两道兜底）
-    outcome = await SDGEN.generate_outcome(intent, life, quota_purpose)
+    outcome = await SDGEN.generate_outcome(
+        intent, life, quota_purpose,
+        art=PERSONA.art_fields(skey) if skey else None)
     if not outcome.ok:
         if say and not outcome.benign:
             fl = fail_line()
