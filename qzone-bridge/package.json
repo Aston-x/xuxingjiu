@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "QQ空间 → OneBot v11 Bridge (TypeScript)",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "tsup src/main.ts --format esm --out-dir dist --dts",

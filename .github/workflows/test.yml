@@ -31,6 +31,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: 依赖自检（pip check）
+        working-directory: qqbot
+        run: python -m pip check
+
       - name: 回归测试（含 Provider / 生图 / 跨平台段）
         working-directory: qqbot
         shell: bash

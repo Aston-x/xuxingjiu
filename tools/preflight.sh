@@ -85,6 +85,21 @@ else
   FAIL=1
 fi
 
+# 7) 版本兼容性守卫。
+#    防止「在新 Python 上一跑又炸」这类问题复发：requirements.txt 被钉回 ==
+#    （导致 3.14 上 pillow/websockets 没 wheel）、安装脚本漏掉 python3.14、
+#    或 CI 矩阵把 3.14 摘掉。每一项都对应一个已经踩过的坑。
+if [ -z "$PY_BIN" ]; then
+  printf '\033[33m~ 环境里没有 python，跳过兼容性守卫\033[0m\n'
+elif [ ! -f tools/compat_check.py ]; then
+  printf '\033[33m~ 找不到 tools/compat_check.py，跳过\033[0m\n'
+elif "$PY_BIN" tools/compat_check.py; then
+  printf '\033[32m✔ 版本兼容性守卫通过\033[0m\n'
+else
+  printf '\n\033[31m✘ 版本兼容性守卫未通过\033[0m\n'
+  FAIL=1
+fi
+
 echo "----------------------------------------"
 if [ "$FAIL" = "0" ]; then
   echo "全部通过，可以推送。"

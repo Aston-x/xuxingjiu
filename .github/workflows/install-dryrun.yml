@@ -30,6 +30,9 @@ jobs:
       - name: 脚本编码守卫
         run: python tools/normalize_scripts.py --quiet
 
+      - name: 兼容性守卫
+        run: python tools/compat_check.py
+
       - name: install.sh --check（只读，不动文件）
         if: runner.os != 'Windows'
         run: bash install.sh --check
