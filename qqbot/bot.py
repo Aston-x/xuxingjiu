@@ -854,6 +854,15 @@ def self_names(sk: str = "") -> tuple[str, ...]:
         return ()
 
 
+def her_name(skey: str = "") -> str:
+    """她叫什么，用来拼日志和通知里的抬头。
+
+    以前这些地方直接写死「许杏玖」—— 开源版换张卡就全都对不上了（日志标题还写着上一个
+    角色的名字）。一张卡都没有时给个中性称呼，别让日志里出现 "None"。
+    """
+    return (self_names(skey) or ("她",))[0]
+
+
 def _name_prefix_re() -> re.Pattern:
     """把**所有**卡的名字拼成一个前缀正则：任何一张卡的名字开头都会被去掉。
 
@@ -879,7 +888,7 @@ NAME_PREFIX = _name_prefix_re()
 
 
 def strip_name_prefix(text: str) -> str:
-    """去掉她自报家门的前缀（「许杏玖：」这种）。"""
+    """去掉她自报家门的前缀（「名字：」这种）。"""
     return NAME_PREFIX.sub("", text)
 INTEREST_WORDS = ("哈哈", "笑死", "离谱", "绝了", "无语", "服了", "真的假的", "真的吗",
                   "牛", "卧槽", "我靠", "为什么", "咋", "怎么", "谁啊", "啊？")
@@ -1003,7 +1012,7 @@ class Attention:
         # 她刚说过话、别人又接上了，就算"正在这个话题里"。这种时候别随机沉默
         self.engage_window = float(cfg.get("engage_window_seconds", 150))
         self.engaged_reply_prob = float(cfg.get("engaged_reply_probability", 0.95))
-        # 没被 @ 但被喊了她的名字（许杏玖/杏玖/玖玖/小玖）时，把**有效阈值**临时调低。
+        # 没被 @ 但被喊了她的名字时，把**有效阈值**临时调低。
         # 注意这和"加兴趣"是两回事：加兴趣是一次性推一把、会被指数衰减吃掉；
         # 降阈值是**持续一个窗口**地把门槛降下来，效果是"她更容易接下一句"。
         self.alias_discount = float(cfg.get("alias_threshold_discount", 0.35))
@@ -2283,7 +2292,7 @@ class Memory:
                      "（群里怎么称呼彼此、有什么固定说法或梗、常聊什么、有什么不成文的规矩）"
                      "只跟这个群有关、跟某个人无关的才算；没有就留空。\n")
         prompt = (
-            "你是许杏玖。下面是刚才的聊天，你自己在心里过一遍：这些人里有谁值得你记住？\n"
+            "你是" + her_name(key) + "。下面是刚才的聊天，你自己在心里过一遍：这些人里有谁值得你记住？\n"
             "只记两类，别的都别记：\n"
             "1) 这个人的特点 —— 脾气、习惯、喜欢什么讨厌什么、是干什么的。"
             "得是以后还能用得上的，随口一句不算；\n"
@@ -4298,7 +4307,7 @@ class Activity:
             fresh = not p.exists()
             with p.open("a", encoding="utf-8") as f:
                 if fresh:
-                    f.write(f"# 许杏玖的行为记录 {datetime.now():%Y-%m-%d}\n\n")
+                    f.write(f"# {her_name()}的行为记录 {datetime.now():%Y-%m-%d}\n\n")
                 for e in entries:
                     f.write(f"- `{e['hhmm']}` **{e['kind']}** {e['text']}\n")
         except Exception as exc:
@@ -7178,7 +7187,7 @@ async def _reply_model_failure(is_group: bool, group_id, user_id, message_id,
             "local": "本地模型调用失败",
             "failed": "本地和云端都失败了"}.get(source, source)
     logger.warning("模型失效兜底：%s（会话 %s）", tech, key)
-    await notify_admins(f"许杏玖那边模型调用失败：{tech}（会话 {key}）。"
+    await notify_admins(f"{her_name(key)}那边模型调用失败：{tech}（会话 {key}）。"
                         "聊天那边已经用兜底话术挡过去了，你自己知道就行。")
 
 
@@ -7596,7 +7605,7 @@ async def build_activity_report(entries: list[dict]) -> str:
     if not facts:
         facts.append("  （这半小时她没挪窝，就在原处待着。）")
 
-    head = [f"【许杏玖 · 半小时小结】{life['time_str']}",
+    head = [f"【{her_name()} · 半小时小结】{life['time_str']}",
             f"状态：{life['act'] or '空闲'}" + ("（她说自己在忙）" if life["busy"] else "")]
     ev = LIFE.event_for("report")
     if ev:

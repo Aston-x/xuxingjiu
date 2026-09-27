@@ -3463,6 +3463,13 @@ async def main():
     check("build_system 真的读到了角色卡",
           _pf38["persona"][:20] in bot.build_system(True, bot.LIFE.current(), 999, 10001),
           "群聊提示词里没出现卡里的 persona")
+    check("her_name() 按会话取名字，日志抬头不再写死她叫什么",
+          bot.her_name() == "许杏玖" and bot.her_name("g999") == "许杏玖",
+          f"{bot.her_name()!r} / {bot.her_name('g999')!r}")
+    # 开源版要能换人：代码里不该再出现把角色名当字面量写死的地方（注释里提无妨）
+    _src38 = (BASE_DIR / "bot.py").read_text(encoding="utf-8")
+    check("bot.py 里没有把角色名当字符串字面量写死",
+          '"许杏玖' not in _src38 and "'许杏玖" not in _src38)
 
     # 生图那条线：形象必须能从当前会话那张卡出 —— 这是"换张卡就换个人"的关键
     _art38 = bot.PERSONA.art_fields("")
