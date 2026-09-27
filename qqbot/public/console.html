@@ -1,0 +1,3275 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>许杏玖 · 控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%234c9aff'/%3E%3Cstop%20offset='1'%20stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='64'%20height='64'%20rx='16'%20fill='url(%23g)'/%3E%3Cpath%20d='M32%2047c-9.4-6-14.6-11.4-14.6-17.6A8.6%208.6%200%200%201%2032%2023a8.6%208.6%200%200%201%2014.6%206.4C46.6%2035.6%2041.4%2041%2032%2047z'%20fill='%23fff'/%3E%3C/svg%3E">
+<style>
+/* ══════════ 设计令牌 ══════════ */
+:root{
+  /* 原生控件跟随主题深浅：textarea 右下角的 resize 手柄、下拉弹层、滑块轨道、滚动条兜底，
+     不声明的话浏览器一律按浅色画 —— 暗色页面上那只手柄会亮成一块白三角 */
+  color-scheme:dark;
+  --bg:#0a0e13;
+  --bg-grad:radial-gradient(1200px 600px at 15% -10%,#16243a 0%,transparent 60%),
+            radial-gradient(900px 500px at 95% 0%,#1a1f3a 0%,transparent 55%);
+  --surface:#111823; --surface-2:#161f2c; --surface-3:#1d2836;
+  --topbg:rgba(17,24,35,.88);
+  --line:#243040; --line-soft:#1c2634;
+  --fg:#e8eef6; --fg-dim:#93a2b6; --fg-mute:#74839a;
+  --accent:#4c9aff; --accent-soft:rgba(76,154,255,.14); --accent-line:rgba(76,154,255,.42);
+  --ok:#3ecf8e; --ok-soft:rgba(62,207,142,.14);
+  --warn:#e3b341; --warn-soft:rgba(227,179,65,.14);
+  --bad:#ff6b6b; --bad-soft:rgba(255,107,107,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+  --shadow-lift:0 2px 6px rgba(0,0,0,.45),0 18px 40px -18px rgba(0,0,0,.8);
+  /* 圆角 */
+  --radius:14px; --radius-sm:9px; --radius-xs:6px; --radius-pill:999px;
+  /* 字体：西文走 Segoe UI（这台机器没装 Inter），中文 PingFang(mac) → 雅黑 UI → 雅黑 → Noto Sans SC；
+     等宽上下文（日志表 / kv 值 / pill / chip / input / pre）末尾显式补中文回退，
+     否则中文只能靠浏览器 per-script 默认，换台机器可能掉进宋体 */
+  --sans:'Inter var','Inter','Segoe UI Variable Text','Segoe UI',-apple-system,system-ui,
+         'PingFang SC','Microsoft YaHei UI','Microsoft YaHei','微软雅黑','Hiragino Sans GB',
+         'Noto Sans SC',sans-serif;
+  --mono:'JetBrains Mono','Cascadia Mono','SF Mono',Consolas,'Liberation Mono',
+         'Microsoft YaHei UI','Microsoft YaHei','PingFang SC',monospace;
+  /* 字号梯度 / 字重梯度 */
+  --fs-3xs:9.5px; --fs-2xs:11px; --fs-xs:11.5px; --fs-sm:12px; --fs-base:14px;
+  --fs-md:15px; --fs-lg:20px; --fs-xl:27px;
+  --fw-med:550; --fw-semi:600; --fw-bold:660;
+  --lh:1.75;
+  /* 间距梯度：面板内部一律走这套，不再各处写裸数字 */
+  --sp-1:4px; --sp-2:6px; --sp-3:8px; --sp-4:12px; --sp-5:16px; --sp-6:22px;
+  /* 动效曲线与时长，统一节奏 */
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --dur:.22s; --dur-slow:.45s;
+  /* 吸顶高度：JS 按顶栏实际高度写回，锚点对齐就永远准 */
+  --stick:132px;
+  --z-top:50; --z-toast:200; --z-lightbox:280; --z-modal:300;
+}
+html[data-theme="light"]{
+  color-scheme:light;
+  --bg:#eef2f7;
+  --bg-grad:radial-gradient(1100px 560px at 12% -12%,#dbe7fb 0%,transparent 62%),
+            radial-gradient(900px 480px at 96% 0%,#e6e0fb 0%,transparent 58%);
+  --surface:#ffffff; --surface-2:#f5f8fc; --surface-3:#eaeff6;
+  --topbg:rgba(255,255,255,.9);
+  --line:#ccd8e6; --line-soft:#e4eaf3;
+  --fg:#16202e; --fg-dim:#4d5d71; --fg-mute:#64748b;
+  --accent:#1f6feb; --accent-soft:rgba(31,111,235,.10); --accent-line:rgba(31,111,235,.38);
+  --ok:#0f8f46; --ok-soft:rgba(18,161,80,.12);
+  --warn:#9a6414; --warn-soft:rgba(183,121,31,.13);
+  --bad:#c92f2f; --bad-soft:rgba(217,58,58,.11);
+  --shadow:0 1px 2px rgba(16,32,56,.06),0 10px 26px -16px rgba(16,32,56,.28);
+  --shadow-lift:0 2px 8px rgba(16,32,56,.08),0 20px 44px -20px rgba(16,32,56,.34);
+}
+
+/* ══════════ 基础 ══════════ */
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);background-image:var(--bg-grad);background-attachment:fixed;
+  color:var(--fg);font-family:var(--sans);font-size:var(--fs-base);line-height:var(--lh);
+  font-feature-settings:'cv11','ss01','tnum';font-variant-numeric:tabular-nums;
+  /* 汉字不设字距（正负都不对）；中英/数字间距与全角标点挤压交给浏览器排版引擎 */
+  letter-spacing:normal;text-autospace:normal;text-spacing-trim:space-first;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3,.ttl{letter-spacing:normal}
+a{color:var(--accent);text-decoration:none}
+kbd{background:var(--surface-3);border:1px solid var(--line);border-radius:var(--radius-xs);
+  padding:0 5px;font-family:var(--mono);font-size:var(--fs-xs)}
+::selection{background:var(--accent-soft)}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--surface-3);border:3px solid transparent;
+  background-clip:padding-box;border-radius:var(--radius-pill)}
+::-webkit-scrollbar-thumb:hover{background:var(--line);background-clip:padding-box}
+/* 横竖滚动条交汇的角落：默认由浏览器画成一块系统色（深色页面上就是白色方块），
+   必须显式透明，否则 textarea / .scroll 这类同时出两条滚动条的容器角落会漏白 */
+::-webkit-scrollbar-corner{background:transparent}
+
+/* 键盘可达：所有能按/能填的东西都给一圈焦点环（鼠标点击不触发） */
+.btn:focus-visible,.tabs button:focus-visible,.subnav button:focus-visible,
+input:focus-visible,select:focus-visible,textarea:focus-visible,
+.chip:focus-visible,.shot:focus-visible,.lb-nav:focus-visible,a:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+.switch input:focus-visible+i{box-shadow:0 0 0 3px var(--accent-soft);outline:2px solid var(--accent);
+  outline-offset:2px}
+
+/* ══════════ 图标 ══════════ */
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.ico{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round;opacity:.9}
+.btn .ico{width:13px;height:13px}
+.logo svg{width:100%;height:100%;display:block;fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* ══════════ 顶栏 + 吸顶分区导航 ══════════ */
+.topbar{position:sticky;top:0;z-index:var(--z-top);background:var(--topbg);
+  backdrop-filter:saturate(180%) blur(14px);border-bottom:1px solid var(--line-soft)}
+/* 顶栏/副导航的内容与 main 用同一个 max-width + 居中，大屏上左缘才对齐卡片
+   （背景仍在通栏的 .topbar 上，吸顶条看起来还是整条） */
+header{display:flex;align-items:center;gap:var(--sp-5);flex-wrap:wrap;padding:var(--sp-3) var(--sp-6);
+  max-width:2200px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:var(--sp-3);min-width:0}
+.brand .logo{width:34px;height:34px;border-radius:var(--radius-sm);flex:none;color:#fff;padding:7px;
+  background:linear-gradient(140deg,var(--accent),#8b5cf6);
+  box-shadow:0 3px 12px -3px var(--accent-line)}
+.brand-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.brand h1{font-size:var(--fs-md);margin:0;font-weight:var(--fw-bold);white-space:nowrap}
+.brand-meta{display:flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap}
+.sp{flex:1 1 auto;min-width:0}
+.tabs{display:flex;gap:2px;background:var(--surface-2);padding:3px;border-radius:var(--radius-pill);
+  border:1px solid var(--line-soft)}
+.tabs button{background:transparent;border:0;color:var(--fg-dim);padding:5px 16px;
+  border-radius:var(--radius-pill);cursor:pointer;font-size:var(--fs-sm);font-weight:var(--fw-med);
+  font-family:inherit;
+  transition:color var(--dur) var(--ease),background var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+.tabs button:hover{color:var(--fg)}
+.tabs button.on{background:var(--surface-3);color:var(--fg);box-shadow:var(--shadow)}
+.hd{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+
+.subnav{border-top:1px solid var(--line-soft)}
+.subnav .in{display:flex;gap:var(--sp-1);padding:0 var(--sp-6);overflow-x:auto;scrollbar-width:none;
+  max-width:2200px;margin:0 auto}
+.subnav .in::-webkit-scrollbar{display:none}
+.subnav button{flex:none;background:none;border:0;border-bottom:2px solid transparent;
+  color:var(--fg-mute);font-family:inherit;font-size:var(--fs-sm);font-weight:var(--fw-med);
+  padding:7px 10px;cursor:pointer;white-space:nowrap;
+  transition:color var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+.subnav button:hover{color:var(--fg-dim)}
+.subnav button.on{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* ══════════ 布局 ══════════ */
+main{padding:var(--sp-5) var(--sp-6) 80px;max-width:2200px;margin:0 auto}
+/* 基础（大屏）列数在这里，具体断点在同名媒体查询里覆盖：
+   大屏定死 3 列 —— auto-fit 在 2560 屏上会算出 4 列，可每个分区只有 3 张卡，每行必空一整列 */
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:var(--sp-5);align-items:start}
+section.tab{display:none}
+section.tab.on{display:grid;animation:panelIn var(--dur-slow) var(--ease-out)}
+
+/* 分区标题：把面板按语义分组，一眼知道哪块是干什么的 */
+.group-title{grid-column:1/-1;display:flex;align-items:center;gap:var(--sp-4);
+  margin:var(--sp-2) 2px calc(var(--sp-1) * -1);font-size:var(--fs-xs);font-weight:var(--fw-semi);
+  letter-spacing:.16em;text-transform:uppercase;color:var(--fg-mute);scroll-margin-top:var(--stick);
+  animation:fade var(--dur-slow) var(--ease-out) both}
+.group-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.group-title .gdot{width:6px;height:6px;border-radius:50%;flex:none;
+  background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ══════════ 卡片 ══════════ */
+.card{position:relative;background:var(--surface);border:1px solid var(--line-soft);
+  border-radius:var(--radius);padding:var(--sp-5) 18px;min-width:0;scroll-margin-top:var(--stick);
+  box-shadow:var(--shadow);overflow:hidden;
+  transition:transform var(--dur) var(--ease),box-shadow var(--dur) var(--ease),
+             border-color var(--dur) var(--ease);
+  animation:cardIn var(--dur-slow) var(--ease-out) both}
+.card::before{content:'';position:absolute;inset:0 0 auto;height:1px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  opacity:0;transition:opacity var(--dur) var(--ease)}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow-lift);border-color:var(--line)}
+.card:hover::before{opacity:.85}
+.card.wide{grid-column:1/-1}
+/* 逐张错开入场，像一叠东西依次摆上来 */
+section.tab.on>.card:nth-child(1){animation-delay:0ms}
+section.tab.on>.card:nth-child(2){animation-delay:30ms}
+section.tab.on>.card:nth-child(3){animation-delay:60ms}
+section.tab.on>.card:nth-child(4){animation-delay:90ms}
+section.tab.on>.card:nth-child(5){animation-delay:120ms}
+section.tab.on>.card:nth-child(6){animation-delay:150ms}
+section.tab.on>.card:nth-child(n+7){animation-delay:180ms}
+#offline-banner{border-color:var(--bad)}
+
+/* 卡头：编号块 + 图标 + 标题 + 徽标 + 右侧操作 */
+.card>h2{margin:0 0 13px;font-size:var(--fs-sm);font-weight:var(--fw-semi);color:var(--fg-dim);
+  display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-height:26px}
+/* 编号角标的外形与配色在下面「角标」那一节统一声明（.pill/.chip/编号共用一套），这里只留动效 */
+.card:hover>h2 .n{transform:scale(1.06)}
+.card>h2 .ico{color:var(--accent);opacity:1}
+.card>h2 .ttl{font-size:var(--fs-md);color:var(--fg);font-weight:var(--fw-bold)}
+
+/* ══════════ 统计块 ══════════ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:var(--sp-3);
+  margin-bottom:var(--sp-4)}
+/* 只有两块统计、又是一张宽卡时（会话上下文），别把 auto-fit 空轨道折叠出来的宽度
+   全塞给那两块：封顶 360px 并靠左，宽度就和运行状态的统计块一致了 */
+.stats.cap{grid-template-columns:repeat(auto-fit,minmax(110px,360px));justify-content:start}
+.stat{background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--radius-sm);
+  padding:10px 12px;min-width:0;
+  transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+.stat:hover{border-color:var(--accent-line);background:var(--surface-3)}
+.stat .v{font-size:var(--fs-lg);font-weight:var(--fw-bold);font-family:var(--mono);line-height:1.32;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stat .k{font-size:var(--fs-xs);color:var(--fg-mute);margin-top:1px}
+.stat.acc .v{color:var(--accent)}
+.stat.ok .v{color:var(--ok)}
+.stat.warn .v{color:var(--warn)}
+.stat.bad .v{color:var(--bad)}
+
+/* ══════════ 键值 ══════════ */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-4);
+  font-size:var(--fs-base);margin:0}
+.kv dt{color:var(--fg-dim);white-space:nowrap}
+.kv dd{margin:0;font-family:var(--mono);font-size:var(--fs-sm);word-break:break-word;min-width:0}
+
+/* 键值表摊多列：kv2 只能摊两列，2560 的宽卡里右侧还是空一大块。
+   用 auto-fit + min() 下限：容器够宽就摊到 3/4 列，窄了自动回落成一列，不必写媒体查询 */
+.kv-grid{display:grid;gap:var(--sp-1) var(--sp-6);align-items:start}
+.kv-grid.k3{grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}
+.kv-grid.k4{grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr))}
+
+/* ══════════ 表格 / 滚动区 ══════════ */
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:var(--fs-sm)}
+th{text-align:left;color:var(--fg-mute);font-weight:var(--fw-med);font-size:var(--fs-xs);
+  letter-spacing:.4px;padding:5px 8px;position:sticky;top:0;background:var(--surface);z-index:1;
+  border-bottom:1px solid var(--line)}
+td{padding:var(--sp-2) 8px;border-bottom:1px solid var(--line-soft);font-family:var(--mono);
+  font-size:var(--fs-sm);vertical-align:top;word-break:break-word}
+tbody tr{transition:background var(--dur) var(--ease)}
+tbody tr:hover{background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:0}
+tbody tr.cur{background:var(--accent-soft)}
+.scroll{max-height:330px;overflow:auto;margin:0 calc(var(--sp-1) * -1);padding:0 var(--sp-1)}
+.scroll-x{overflow-x:auto}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:var(--fs-sm);
+  color:var(--fg-dim);max-height:340px;overflow:auto;background:var(--surface-2);
+  border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:10px 12px;line-height:1.6}
+
+/* ══════════ 角标：状态胶囊 / 列表标签 / 卡片编号 —— 全站同一套外形 ══════════
+   三种历史类名（.pill / .chip / 卡头 .n）在这里只声明一次外形与配色；
+   需要不同的地方一律改这里的 padding/字号，不要再长出第二套 */
+.pill,.chip,.card>h2 .n{display:inline-flex;align-items:center;gap:5px;flex:none;
+  background:var(--surface-3);color:var(--fg-dim);border:0;border-radius:var(--radius-pill);
+  padding:2px 9px;font-family:var(--mono);font-size:var(--fs-2xs);line-height:1.6;
+  max-width:100%;overflow-wrap:anywhere;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
+             transform var(--dur) var(--ease)}
+/* 语义色：两套历史类名互为别名（低对比主题靠背景/文字令牌，不靠边框） */
+.pill.ok,.chip.pos{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.bad,.chip.neg{background:var(--bad-soft);color:var(--bad)}
+.pill.acc,.chip.acc,.card>h2 .n{background:var(--accent-soft);color:var(--accent)}
+/* 特例 1：空胶囊不占位（顶栏那几个动态 pill 没数据时要消失） */
+.pill:empty{display:none}
+/* 特例 2：列表标签在流式文本里（.note / kv 值 / 表格）靠外边距隔开。
+   胶囊与编号角标都在 flex 行里、由容器的 gap 管间距，不能吃这 4px 底边距
+   （否则会被顶高 2px，顶栏和卡头都会歪） */
+.chip{margin:0 4px 4px 0}
+button.pill{cursor:pointer}
+.pill:hover,.chip:hover{transform:translateY(-1px)}
+button.pill:hover{color:var(--fg)}
+.chip button{background:none;border:0;color:inherit;opacity:.5;cursor:pointer;
+  font-size:var(--fs-base);line-height:1;padding:0 1px;border-radius:var(--radius-xs)}
+.chip button:hover{opacity:1;background:var(--bad-soft);color:var(--bad)}
+
+/* ══════════ 进度 / 配额 ══════════ */
+.bar{height:5px;background:var(--surface-3);border-radius:var(--radius-pill);overflow:hidden;
+  margin-top:var(--sp-1);position:relative}
+.bar i{display:block;height:100%;width:0;border-radius:var(--radius-pill);background:var(--accent);
+  transition:width var(--dur-slow) var(--ease-out),background var(--dur) var(--ease);
+  animation:barIn var(--dur-slow) var(--ease-out)}
+/* 档位刻度线：好感/心情条的档位边界就画在条上 —— 分数划到哪一档一眼可见。
+   s 是 1px 竖线，pointer-events 关掉（它盖在条上，别拦 hover） */
+.bar s{position:absolute;top:0;bottom:0;width:1px;background:var(--surface);opacity:.55;
+  pointer-events:none}
+/* 分档着色：低分红 → 偏低黄 → 中性到良好蓝 → 很高绿（50 是中性，不再一刀切成两色） */
+.bar i.lv-lo{background:var(--bad)}
+.bar i.lv-mid{background:var(--warn)}
+.bar i.lv-ok{background:var(--accent)}
+.bar i.lv-hi{background:var(--ok)}
+.bar i.ok{background:var(--ok)}
+.bar i.bad,.bar i.full{background:var(--bad)}
+.quota{display:grid;gap:2px}
+.quota-top{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm)}
+.pctbar{display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-1)}
+.pctbar-k{width:2.4em;flex:none;color:var(--fg-mute);font-size:var(--fs-xs)}
+.pctbar .bar{flex:1;margin:0}
+.pctbar-v{width:5.4em;flex:none;text-align:right;font-family:var(--mono);font-size:var(--fs-xs)}
+
+/* ══════════ 天气条（B03）：一排小格，窄了自动折行 ══════════
+   她"对天气敏锐"这件事得看得见：气温/体感/湿度/风/降水概率/紫外线/日出日落，
+   加上"刚察觉到的变化"与联网查到的预警。全用 auto-fit，窄屏自然回落成一列。 */
+.wstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(92px,100%),1fr));
+  gap:var(--sp-2);margin:var(--sp-2) 0 var(--sp-3)}
+.wstrip .m{background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--radius-sm);
+  padding:7px 9px;min-width:0;
+  transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease),
+             transform var(--dur) var(--ease)}
+.wstrip .m:hover{border-color:var(--accent-line);background:var(--surface-3);transform:translateY(-1px)}
+.wstrip .m .v{font-family:var(--mono);font-size:var(--fs-md);font-weight:var(--fw-semi);
+  line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wstrip .m .k{font-size:var(--fs-2xs);color:var(--fg-mute);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.wstrip .m.big{grid-column:span 2}
+.wstrip .m.big .v{font-size:var(--fs-lg)}
+.wnow{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-1)}
+.wnow .t{font-family:var(--mono);font-size:var(--fs-xl);font-weight:var(--fw-bold);
+  line-height:1.1;letter-spacing:-.01em}
+.wnow .d{color:var(--fg-dim);font-size:var(--fs-sm)}
+
+/* ══════════ 好感档位图例（B04） ══════════
+   档位边界**直接画在进度条上**（见 .bar s 的刻度线），这里只列一份档名，
+   所以图例是共享的、不点亮点某一档 —— 各人落在哪档看他自己那条条。 */
+.tier-legend{display:flex;flex-wrap:wrap;gap:2px var(--sp-3);font-size:var(--fs-2xs);color:var(--fg-mute);
+  margin-top:var(--sp-1)}
+.tier-legend span{display:inline-flex;align-items:center;gap:4px}
+.tier-legend b{width:7px;height:7px;border-radius:2px;background:var(--surface-3);flex:none}
+
+/* ══════════ 开关 ══════════ */
+.switch{position:relative;display:inline-block;width:36px;height:19px;flex:none;vertical-align:middle}
+.switch input{opacity:0;width:0;height:0;position:absolute}
+.switch i{position:absolute;inset:0;background:var(--surface-3);border:1px solid var(--line);
+  border-radius:var(--radius-pill);transition:background var(--dur) var(--ease),
+  border-color var(--dur) var(--ease);cursor:pointer}
+.switch i::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;
+  background:var(--fg-mute);transition:transform var(--dur) var(--ease),background var(--dur) var(--ease)}
+.switch input:checked+i{background:var(--accent);border-color:var(--accent)}
+.switch input:checked+i::after{transform:translateX(17px);background:#fff}
+.switch input:disabled+i{cursor:not-allowed;opacity:.5}
+/* 放在胶囊/标签里的开关用紧凑尺寸（顶栏「自动」、权限名单、表情包库都用同一档） */
+.pill .switch,.chip .switch{width:30px;height:16px}
+.pill .switch i::after,.chip .switch i::after{width:11px;height:11px;top:1.5px;left:1.5px}
+.pill .switch input:checked+i::after,.chip .switch input:checked+i::after{transform:translateX(14px)}
+
+/* ══════════ 表单元素：每个选择器只声明一次，表格化的属性各自写全 ══════════ */
+select{background:var(--surface-2);border:1px solid var(--line);color:var(--fg);
+  border-radius:var(--radius-sm);padding:var(--sp-1) 9px;font-size:var(--fs-sm);
+  font-family:var(--mono);max-width:100%;cursor:pointer;
+  transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+input[type=text]{background:var(--surface-2);border:1px solid var(--line);color:var(--fg);
+  border-radius:var(--radius-sm);padding:var(--sp-1) 9px;font-size:var(--fs-sm);
+  font-family:var(--mono);max-width:100%;
+  transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+textarea{background:var(--surface-2);border:1px solid var(--line);color:var(--fg);
+  border-radius:var(--radius-sm);padding:9px 11px;font-size:var(--fs-sm);font-family:var(--mono);
+  max-width:100%;width:100%;resize:vertical;line-height:1.7;min-height:76px;
+  transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+/* ══════════ 拖动输入框大小的角标：全站**同一只**手柄 ══════════
+   浏览器自绘的那只三斜纹是写死的亮白（暗色页面上扎眼、且不跟主题走，color-scheme 管不到它），
+   而且不同引擎画出来的粗细/间距都不一样 —— 之前人设区和话术区的角标看着就不是一个东西。
+   这里统一换成同一张 16×16 的两道斜线 SVG：位置、线宽、圆角、离边距离全站一致。
+   深浅色各一份、取的就是 --fg-mute 在那两套主题里的值；两份只差颜色，画法完全相同。
+   （改用 data-URI 而不是渐变：渐变的斜纹宽度随角标盒大小浮动，才是一直"不统一"的根因。） */
+textarea::-webkit-resizer{
+  background:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Cg fill='none' stroke='%2374839a' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M6.5 14.5L14.5 6.5'/%3E%3Cpath d='M11 14.5L14.5 11'/%3E%3C/g%3E%3C/svg%3E") no-repeat right 1px bottom 1px/15px 15px}
+html[data-theme="light"] textarea::-webkit-resizer{
+  background:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Cg fill='none' stroke='%2364748b' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M6.5 14.5L14.5 6.5'/%3E%3Cpath d='M11 14.5L14.5 11'/%3E%3C/g%3E%3C/svg%3E") no-repeat right 1px bottom 1px/15px 15px}
+textarea:hover{border-color:var(--line)}
+select:focus,input:focus,textarea:focus{outline:none;border-color:var(--accent-line);
+  box-shadow:0 0 0 3px var(--accent-soft)}
+input[type=file]{font-size:var(--fs-xs);color:var(--fg-dim);max-width:100%}
+input[type=range]{width:100%;margin:var(--sp-1) 0 0;accent-color:var(--accent);cursor:pointer;display:block}
+input[type=range]::-webkit-slider-thumb{transition:transform .12s var(--ease),box-shadow var(--dur) var(--ease)}
+input[type=range]:hover::-webkit-slider-thumb{box-shadow:0 0 0 6px var(--accent-soft)}
+input[type=range]:active::-webkit-slider-thumb{transform:scale(1.16)}
+button{font-family:inherit}
+.btn{display:inline-flex;align-items:center;gap:5px;background:var(--surface-2);border:1px solid var(--line);
+  color:var(--fg-dim);border-radius:var(--radius-sm);padding:5px 11px;font-size:var(--fs-sm);
+  cursor:pointer;white-space:nowrap;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
+             border-color var(--dur) var(--ease),transform .1s var(--ease),box-shadow var(--dur) var(--ease)}
+.btn:hover{border-color:var(--accent-line);color:var(--fg);
+  box-shadow:0 4px 14px -6px var(--accent-line);transform:translateY(-1px)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{border-color:transparent;background:var(--bad-soft);color:var(--bad)}
+.btn.danger:hover{background:var(--bad);color:#fff}
+.btn.sm{padding:3px 8px;font-size:var(--fs-xs)}
+
+.field{margin-bottom:var(--sp-4)}
+.field>label{display:flex;align-items:center;gap:var(--sp-2);color:var(--fg-dim);font-size:var(--fs-xs);
+  margin-bottom:var(--sp-1);flex-wrap:wrap}
+.hint,.note{color:var(--fg-mute);font-size:var(--fs-sm);margin-top:var(--sp-2);line-height:1.85}
+.note b{color:var(--fg-dim)}
+.row{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.cnt{color:var(--fg-mute);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+
+/* ══════════ 列表行（人物记忆 / 好感心情 / 表情包 / 群聊记忆 共用） ══════════ */
+.items{display:block}
+.item{display:flex;align-items:flex-start;gap:var(--sp-3);padding:var(--sp-3) 0;
+  border-bottom:1px solid var(--line-soft)}
+.item:last-child{border-bottom:0}
+.item-main{flex:1 1 auto;min-width:0}
+.item-meta{display:flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap}
+.item-title{font-size:var(--fs-base);color:var(--fg);overflow-wrap:anywhere}
+.item .acts{align-self:center}
+.thumb{width:48px;height:48px;border-radius:var(--radius-sm);flex:none;object-fit:cover;
+  background:var(--surface-3);cursor:zoom-in;transition:transform var(--dur) var(--ease)}
+.thumb:hover{transform:scale(1.05)}
+.thumb.broken{opacity:.25;cursor:default}
+.thumb-ph{width:48px;height:48px;border-radius:var(--radius-sm);flex:none;background:var(--surface-3)}
+
+/* ══════════ 日志 ══════════ */
+.logbox td{padding:2.5px 8px;font-size:var(--fs-xs);white-space:pre-wrap;word-break:break-word;
+  transition:background var(--dur) var(--ease)}
+.logbox .t{color:var(--fg-mute);white-space:nowrap;width:1%}
+.logbox tr:hover td{background:var(--surface-2)}
+.lv-INFO{color:var(--fg-dim)}
+.lv-WARNING{color:var(--warn)}
+.lv-ERROR{color:var(--bad)}
+.lv-CRITICAL{color:var(--bad);font-weight:var(--fw-semi)}
+.lv-DEBUG{color:var(--fg-mute)}
+
+/* ══════════ 图廊 ══════════ */
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:var(--sp-3)}
+.gal-head{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;
+  margin-top:var(--sp-4);margin-bottom:var(--sp-2)}
+.shot{position:relative;margin:0;background:var(--surface-2);border:1px solid var(--line-soft);
+  border-radius:var(--radius-sm);overflow:hidden;cursor:zoom-in;min-width:0;
+  transition:transform var(--dur) var(--ease),border-color var(--dur) var(--ease),
+             box-shadow var(--dur) var(--ease)}
+.shot:hover{border-color:var(--accent-line);transform:translateY(-2px);box-shadow:var(--shadow)}
+.shot img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--surface-3);
+  transition:transform var(--dur-slow) var(--ease-out)}
+.shot:hover img{transform:scale(1.07)}
+.shot figcaption{padding:3px 6px;font-size:var(--fs-2xs);font-family:var(--mono);color:var(--fg-mute);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shot.bad img{opacity:.3}
+
+/* ══════════ 空态 / 骨架屏 / 报错 ══════════ */
+.empty{color:var(--fg-mute);font-size:var(--fs-sm);padding:var(--sp-5) 0;text-align:center;
+  border:1px dashed var(--line);border-radius:var(--radius-sm);
+  transition:border-color var(--dur) var(--ease)}
+.empty:hover{border-color:var(--line)}
+.err{color:var(--bad);font-size:var(--fs-sm);font-family:var(--mono);padding:var(--sp-3) 10px;
+  background:var(--bad-soft);border-radius:var(--radius-sm);word-break:break-word;line-height:1.7}
+.err.warn{color:var(--warn);background:var(--warn-soft)}
+.skel{height:11px;border-radius:var(--radius-xs);background:var(--surface-3);animation:shim 1.3s infinite;
+  margin:var(--sp-3) 0}
+.steps{margin:var(--sp-2) 0;padding-left:1.6em;color:var(--fg-dim);font-size:var(--fs-base);line-height:1.9}
+.steps li{padding-left:2px}
+.steps li+li{margin-top:var(--sp-1)}
+.lbl{font-size:var(--fs-xs);font-weight:var(--fw-semi);letter-spacing:.06em;color:var(--fg-mute);
+  margin:var(--sp-3) 0 var(--sp-1)}
+.sep{margin-top:var(--sp-4);border-top:1px solid var(--line-soft);padding-top:var(--sp-4)}
+.fill{flex:1 1 220px;min-width:0}
+.mini{font-size:var(--fs-xs);color:var(--fg-mute);line-height:1.6}
+/* 时间/短元数据列：表格自动布局会把窄卡里的 "00:05" 折成三行，需要时挂 .nowrap 钉住 */
+.nowrap{white-space:nowrap}
+.sub{font-size:var(--fs-xs);color:var(--fg-mute);margin-top:var(--sp-1);overflow-wrap:anywhere}
+.acts{display:flex;align-items:center;gap:var(--sp-2);flex:none}
+.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));
+  gap:var(--sp-3) var(--sp-6)}
+/* 生活作息卡内部：横向三栏（当前状态 / 日程表 / 她自己在做什么）。
+   宽卡下 auto-fit 把三块均匀铺开、空轨道会自动塌缩不留洞；单列断点下自然回落成一栏 */
+.life-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  gap:var(--sp-4) var(--sp-6);align-items:start}
+/* 天气那块独占一整行：它是一排小格子，铺满一行的宽度才排得开（挤在 1/3 栏里要占三行），
+   也免得它把整张卡顶高 —— 这张卡是"横向面板"，验收要看总高 */
+.life-grid .full{grid-column:1/-1}
+/* 阈值与手感调节的滑块组：宽卡里自动摊开，窄了自然回落（不必再写媒体查询）。
+   用 auto-fill 而不是 auto-fit —— auto-fit 会按每组条数收缩轨道，
+   于是 8 条的组是 4 列、3 条的组是 3 列、1 条的组一个滑块拉满整卡，
+   同卡里滑块宽度各不相等；auto-fill 固定轨道数，各组对齐、宽度一致。
+   下限只在超宽屏提到 360px：2560 屏上 6 轨会窄到 335px，最长那条中文说明折成 2 行；
+   2000px 以下保持 300px（实测：flat 360 在 1024 视口会把轨道从 3 条压到 2 条、
+   B17 高 1223→1544px，+321px 得不偿失；2000 起提到 360 则 1560/1024 高度完全不变） */
+.tune-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+  gap:0 var(--sp-6)}
+@media (min-width:2000px){
+  .tune-grid{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
+}
+.tune{margin-bottom:var(--sp-4);min-width:0}
+.tune-top{display:flex;align-items:baseline;gap:var(--sp-3);justify-content:space-between}
+.tune-desc{font-size:var(--fs-sm)}
+.tune-val{font-family:var(--mono);font-size:var(--fs-xs);color:var(--accent)}
+.tune-foot{display:flex;justify-content:space-between;color:var(--fg-mute);font-size:var(--fs-2xs)}
+/* 需要固定宽度 / 不用等宽的零星位置 */
+#log-search{width:150px}
+#stk-tags{width:170px}
+#stk-url{max-width:680px}
+#ac-admin,#ac-protect{width:100%}
+td.sans,th.sans{font-family:var(--sans)}
+label.chip{cursor:pointer}
+.note.warn{color:var(--warn)}
+/* 表情包库是宽卡，条目摊成多列，别再排一条竖长龙 */
+#p-stickers .items{display:grid;gap:0 var(--sp-5);
+  grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr))}
+#p-stickers .items .item{border-bottom:1px solid var(--line-soft)}
+
+/* ── 宽卡内部横向化：只动「摊几列」，配色/圆角/字号一律不动 ──
+   这几块内容都是「竖着排就很长、横着摊刚好填满」，改成自适应网格后，
+   宽卡不用再为它们留一整行，也不必让图廊/列表独占 2156px */
+/* SD：左「额度表 + 出图模式」、右「图廊」，图廊不再独占整张宽卡 */
+#p-sd .sd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));
+  gap:var(--sp-4) var(--sp-6);align-items:start}
+/* 识图：云端 / 本地 / 参数 三块并排（原来 two-col 只有两列、左右高度还差一截） */
+#p-vision .vs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));
+  gap:var(--sp-4) var(--sp-6);align-items:start}
+/* 跨群：群名册 / 认识的人 两块并排，单列 .items 不再在宽卡里拉成一长条 */
+#p-crossgroup .cg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));
+  gap:var(--sp-4) var(--sp-6);align-items:start}
+/* 话术与列表：文本框摊两列，分组标题占满整行。
+   标题用 grid-column:1/-1 独占一行，条目跨组连续流动 —— 不会出现「某组只有一项」占掉半行 */
+#p-lists .list-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(520px,100%),1fr));
+  gap:0 var(--sp-6)}
+#p-lists .list-grid .lbl-row{grid-column:1/-1}
+
+/* ══════════ Toast ══════════ */
+#toasts{position:fixed;right:20px;bottom:20px;z-index:var(--z-toast);display:flex;
+  flex-direction:column;gap:9px;max-width:min(420px,46vw)}
+.toast{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:var(--radius-sm);padding:10px 13px;box-shadow:var(--shadow-lift);font-size:var(--fs-sm);
+  line-height:1.6;animation:slidein var(--dur) var(--ease);
+  transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.toast.out{opacity:0;transform:translateX(18px)}
+.toast.ok{border-left-color:var(--ok)}
+.toast.bad{border-left-color:var(--bad)}
+.toast .tt{font-weight:var(--fw-semi)}
+.toast .tc{display:none;margin-left:var(--sp-2);font-family:var(--mono);font-size:var(--fs-2xs);
+  color:var(--fg-mute)}
+.toast.multi .tc{display:inline}
+.toast .tb{color:var(--fg-dim);font-family:var(--mono);font-size:var(--fs-xs);word-break:break-word}
+
+/* ══════════ 模态 ══════════ */
+#modal{position:fixed;inset:0;z-index:var(--z-modal);background:rgba(6,10,16,.62);
+  backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:20px}
+#modal[hidden]{display:none}
+.modal{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow-lift);padding:20px 22px;max-width:470px;width:100%;
+  animation:fade var(--dur) var(--ease)}
+.modal h3{margin:0 0 var(--sp-3);font-size:var(--fs-md)}
+.modal p{margin:0 0 18px;color:var(--fg-dim);font-size:var(--fs-base);line-height:1.8;
+  white-space:pre-wrap;font-family:var(--mono)}
+
+/* ══════════ 灯箱（页内看原图，不再开新标签） ══════════ */
+#lightbox{position:fixed;inset:0;z-index:var(--z-lightbox);background:rgba(4,8,14,.92);
+  display:flex;align-items:center;justify-content:center;padding:clamp(12px,3vw,44px);cursor:zoom-out}
+#lightbox[hidden]{display:none}
+#lb-img{max-width:100%;max-height:calc(100vh - clamp(24px,7vw,96px));width:auto;height:auto;
+  object-fit:contain;border-radius:var(--radius);box-shadow:var(--shadow-lift);cursor:default;
+  background:var(--surface-2);animation:fade var(--dur) var(--ease)}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:42px;height:42px;border-radius:50%;
+  background:rgba(16,22,32,.7);border:1px solid var(--line);color:#fff;display:flex;align-items:center;
+  justify-content:center;cursor:pointer;transition:background var(--dur) var(--ease)}
+.lb-nav:hover{background:var(--accent);border-color:var(--accent)}
+.lb-nav.prev{left:14px}
+.lb-nav.next{right:14px}
+.lb-nav[hidden]{display:none}
+#lb-cap{position:absolute;left:0;right:0;bottom:10px;text-align:center;color:var(--fg-dim);
+  font-family:var(--mono);font-size:var(--fs-xs);pointer-events:none;padding:0 var(--sp-6);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#lb-close{position:absolute;top:12px;right:12px;background:rgba(16,22,32,.7);color:#fff}
+
+/* ══════════ 动效 ══════════ */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes panelIn{from{opacity:0;transform:translateY(12px) scale(.996)}to{opacity:1;transform:none}}
+@keyframes barIn{from{width:0 !important}}
+@keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.995)}to{opacity:1;transform:none}}
+@keyframes shim{0%,100%{opacity:.3}50%{opacity:.75}}
+@keyframes slidein{from{opacity:0;transform:translateX(18px)}to{opacity:1;transform:none}}
+@keyframes flashNum{0%{color:var(--accent);transform:scale(1.09)}100%{transform:none}}
+@keyframes brandFlow{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes ringOut{0%{box-shadow:0 0 0 0 var(--accent-soft)}100%{box-shadow:0 0 0 8px transparent}}
+.flash{animation:flashNum .6s var(--ease-out)}
+/* 品牌角标：渐变缓慢流动（一眼能看出这页是活的，又不抢内容） */
+.brand .logo{background:linear-gradient(140deg,var(--accent),#8b5cf6 55%,var(--accent));
+  background-size:200% 200%;animation:brandFlow 11s var(--ease) infinite}
+/* 统计块：悬停轻微抬起 + 阴影；表格行、列表行悬停给一层极淡的重点色，
+   都是"不动布局"的做法（不用位移换边距，不会引起回流抖动） */
+.stat:hover{transform:translateY(-1px)}
+.item{transition:background var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+.item:hover{background:linear-gradient(90deg,var(--accent-soft),transparent 72%);
+  box-shadow:inset 2px 0 0 var(--accent-line)}
+.tabs button:active{transform:scale(.97)}
+/* 主题切换：只在切换那一刻给这些容器挂过渡，平时不给全局加 transition
+   （全局过渡会让日志每次重绘都拖一层动画，反而更卡） */
+html.theme-anim body,html.theme-anim .card,html.theme-anim .stat,html.theme-anim .topbar,
+html.theme-anim input,html.theme-anim select,html.theme-anim textarea,html.theme-anim table,
+html.theme-anim .pill,html.theme-anim .chip,html.theme-anim .wstrip .m,html.theme-anim .bar s{
+  transition:background var(--dur-slow) var(--ease),background-color var(--dur-slow) var(--ease),
+             color var(--dur-slow) var(--ease),border-color var(--dur-slow) var(--ease)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--fg-mute);flex:none;display:inline-block}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);animation:pulse 2.4s infinite}
+.dot.warn{background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
+.dot.bad{background:var(--bad);box-shadow:0 0 0 3px var(--bad-soft)}
+
+/* ══════════ 响应式 ══════════ */
+/* 只有宽屏（3 列栅格）才把这几张卡横跨两列 —— 两列布局下 1+2 会溢出一行 */
+@media (min-width:1181px){
+  .span2{grid-column:span 2}
+}
+@media (max-width:1180px){
+  main{padding:var(--sp-4) var(--sp-5) 64px}
+  header{padding:var(--sp-3) var(--sp-5)}       /* 左右与 main 的 --sp-5 一致，顶栏内容才和卡片对齐 */
+  .subnav .in{padding:0 var(--sp-5)}
+  .grid{gap:var(--sp-4)}
+  .opt{display:none}                      /* 次要 pill 收起：运行时长让位给状态与 QQ */
+  #pill-sync{margin-left:auto}
+}
+/* 两列：下限 900px 是算出来的 —— 两列要 2×420 + 16 间距 + 44 内边距 = 900，
+   低于 900 还留着 .orphan2 的 span 2 就会在单列栅格里造出隐式第二列，把布局顶破 */
+@media (min-width:900px) and (max-width:1180px){
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .card.orphan2{grid-column:span 2}      /* 三张一组里的第三张跨两列，别留半列空洞 */
+}
+@media (min-width:761px) and (max-width:899px){
+  .grid{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:760px){
+  main{padding:var(--sp-3) var(--sp-3) 56px}
+  header{padding:var(--sp-3)}
+  .subnav .in{padding:0 var(--sp-3)}
+  .grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-4)}
+  /* 手机上四个统计块排成 2×2，别 3+1 留一个孤块和一大截空白 */
+  .stats{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  .tabs{width:100%}
+  .tabs button{flex:1;text-align:center}
+  .subnav button{font-size:var(--fs-xs);padding:7px var(--sp-2)}
+  .hd{width:100%;justify-content:space-between}
+  /* 手机上顶栏只留图标：三个动作按钮的文字收起来（title 就是无障碍名），
+     否则第 4 个按钮会被挤到下一行；卡片内的按钮不受影响 */
+  header .hd .btn .btxt{display:none}
+  .card{padding:var(--sp-4)}
+  .card.wide{grid-column:auto}
+  .card>h2{min-height:0}
+  main,.card,.item-main,.scroll,.scroll-x,.two-col{min-width:0}
+  .item{flex-wrap:wrap}
+  .item .acts{margin-left:auto}
+  .brand h1{white-space:normal}
+  .gal{grid-template-columns:repeat(auto-fill,minmax(84px,1fr))}
+  /* 天气条在手机上再收一档：一屏能放下 3~4 格，不用横向滑 */
+  .wstrip{grid-template-columns:repeat(auto-fit,minmax(min(78px,100%),1fr))}
+  .wstrip .m.big{grid-column:auto}
+  .wstrip .m.big .v{font-size:var(--fs-md)}
+  .wnow .t{font-size:var(--fs-lg)}
+  /* 长表格（日程表 / 轨迹 / 日志）窄屏改成横向滚动，而不是把整页顶宽 */
+  .scroll table{min-width:420px}
+  .scroll-x table{min-width:420px}
+}
+/* 超窄（折叠屏外屏那种）：角标与统计块也别挤出格子 */
+@media (max-width:420px){
+  .stats{grid-template-columns:repeat(auto-fit,minmax(118px,1fr))}
+  .grid{gap:var(--sp-3)}
+  .card{padding:var(--sp-3) var(--sp-4)}
+  main{padding:var(--sp-2) var(--sp-2) 48px}
+  .tier-legend{gap:1px var(--sp-2)}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+  .dot.ok{animation:none}
+  .brand .logo{animation:none}
+  .card:hover{transform:none}
+  .stat:hover{transform:none}
+  .wstrip .m:hover{transform:none}
+  .shot:hover{transform:none}
+  .shot:hover img{transform:none}
+  .pill:hover,.chip:hover{transform:none}
+  .btn:hover{transform:none}
+}
+</style>
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+<symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/><path d="M12 7.5V12l3 2"/></symbol>
+<symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7-4.3-7-9.3A3.9 3.9 0 0 1 12 8.4a3.9 3.9 0 0 1 7 2.3c0 5-7 9.3-7 9.3z"/></symbol>
+<symbol id="i-route" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 4.5-8L21 9"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6z"/><path d="M9.5 12l2 2 3.5-4"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/><path d="M5 20c1.5-3.3 4-5 7-5s5.5 1.7 7 5"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3v10c0 1.7-3.6 3-8 3s-8-1.3-8-3z"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M3.5 19c1-2.6 3.3-4 6-4s5 1.4 6 4"/><path d="M16.5 9a2.6 2.6 0 0 1 0 5M18 19c-.3-1.6-1-2.9-2-3.8"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5.5h16v10H9.5L4 20z"/><path d="M8 10.5h8"/></symbol>
+<symbol id="i-image" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8.5 11a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/><path d="M4.5 17.5l5-5 4 3.5 3-2.5 3 3"/></symbol>
+<symbol id="i-smile" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18"/><path d="M8.5 10h.01M15.5 10h.01"/><path d="M8 14.5c1 1.3 2.4 2 4 2s3-.7 4-2"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><path d="M15 5v6M9 13v6"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 19a9 9 0 1 1 16 0"/><path d="M12 14.5l4.5-4.5"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h11"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><path d="M6 11h12v9H6z"/><path d="M9 11V8a3 3 0 0 1 6 0v3"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.4 6.4"/><path d="M20 5v6h-6"/></symbol>
+<symbol id="i-zap" viewBox="0 0 24 24"><path d="M13.5 3L5.5 14h6l-1 7 8-11h-6z"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
+<symbol id="i-rss" viewBox="0 0 24 24"><path d="M5 19h.01"/><path d="M4 12a8 8 0 0 1 8 8"/><path d="M4 5a15 15 0 0 1 15 15"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 16V11a6 6 0 1 0-12 0v5l-1.5 3h15z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5h.01"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z"/><path d="M16.2 16.2L20.5 20.5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="i-left" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6"/></symbol>
+<symbol id="i-right" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+</svg>
+
+<div class="topbar" id="topbar">
+  <header>
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-heart"></use></svg></span>
+      <div class="brand-txt">
+        <h1>许杏玖 · 控制台</h1>
+        <div class="brand-meta">
+          <span class="pill" id="pill-link"><i class="dot"></i><span>连接中…</span></span>
+          <span class="pill" id="hd-self"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button id="btn-bot" class="on" data-tab="bot">Bot</button>
+      <button id="btn-qzone" data-tab="qzone">空间</button>
+    </div>
+
+    <div class="sp"></div>
+
+    <div class="hd">
+      <span class="pill opt" id="pill-uptime"></span>
+      <span class="pill" id="pill-sync"></span>
+      <label class="pill" id="auto-pill" title="每 5 秒自动刷新（正在输入的那一块会跳过）">
+        <span class="switch"><input type="checkbox" id="auto" checked><i></i></span>自动</label>
+      <button class="btn sm" onclick="refreshAll(true)" title="刷新全部（快捷键 r）">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg><span class="btxt">刷新</span></button>
+      <button class="btn sm" id="theme-btn" onclick="toggleTheme()" title="切换主题（快捷键 t）">
+        <svg class="ico" aria-hidden="true"><use href="#i-moon"></use></svg><span class="btxt">浅色</span></button>
+      <button class="btn sm" onclick="forgetToken()" title="清除本机保存的令牌">
+        <svg class="ico" aria-hidden="true"><use href="#i-key"></use></svg><span class="btxt">令牌</span></button>
+    </div>
+  </header>
+  <nav class="subnav" id="subnav" aria-label="分区导航"><div class="in"></div></nav>
+</div>
+
+<main>
+<div id="offline-banner" class="card wide" style="display:none">
+  <h2><span class="n">!</span><svg class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>
+    <span class="ttl">控制台后端未连接</span></h2>
+  <div class="note">当前页面没有接到 <kbd>/api/*</kbd>，所以面板取不到数据。常见两种原因：</div>
+  <ol class="steps">
+    <li><b>直接双击打开了 HTML 文件</b> —— 这样没有后端。请改为访问
+      <kbd>http://127.0.0.1:6200/</kbd>。</li>
+    <li><b>bot 进程仍是改动前的版本</b> —— 控制台随 bot 一起启动，需要重启一次：
+      双击项目根目录下的 <kbd>restart.bat</kbd>（或 <kbd>start-all.bat</kbd>）。</li>
+  </ol>
+  <div class="note">重启后访问 <kbd>http://127.0.0.1:6200/</kbd>，首次会提示输入令牌，
+    令牌内容在 <kbd>state\console-token</kbd>。</div>
+  <div class="row sep"><button class="btn sm primary" onclick="refreshAll(true)">重试</button>
+    <span class="mini">还是连不上就按上面的顺序排查</span></div>
+</div>
+
+<!-- ══════════════ Bot ══════════════ -->
+<section id="tab-bot" class="tab on grid">
+  <!-- 卡片编号 = 页面上的排列顺序（从上到下、从左到右）；新增面板请插在对应位置、顺手顺移后面所有编号 ——
+       编号跳号或与页面顺序对不上都算错，追加在末尾时也要保证接着上一张 -->
+
+  <div class="group-title" id="g-overview"><span class="gdot"></span>运行概览</div>
+  <div class="card span2">
+    <h2><span class="n">B01</span><svg class="ico" aria-hidden="true"><use href="#i-pulse"></use></svg>
+      <span class="ttl">运行状态</span><span class="sp"></span>
+      <span id="stamp-status" class="pill"></span></h2>
+    <div class="stats" id="p-status-stats"></div>
+    <div id="p-status"></div>
+  </div>
+  <div class="card">
+    <h2><span class="n">B02</span><svg class="ico" aria-hidden="true"><use href="#i-gauge"></use></svg>
+      <span class="ttl">额度与限流</span></h2>
+    <div id="p-limits"></div>
+  </div>
+
+  <div class="group-title" id="g-now"><span class="gdot"></span>她现在的状态</div>
+  <div class="card wide">
+    <h2><span class="n">B03</span><svg class="ico" aria-hidden="true"><use href="#i-clock"></use></svg>
+      <span class="ttl">生活作息</span><span class="sp"></span>
+      <button class="btn sm" onclick="load('life')">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-life"></div>
+  </div>
+  <div class="card span2">
+    <h2><span class="n">B04</span><svg class="ico" aria-hidden="true"><use href="#i-heart"></use></svg>
+      <span class="ttl">好感 / 心情</span><span class="sp"></span>
+      <button class="btn sm" onclick="load('mood')">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-mood"></div>
+  </div>
+  <div class="card">
+    <h2><span class="n">B05</span><svg class="ico" aria-hidden="true"><use href="#i-route"></use></svg>
+      <span class="ttl">行为轨迹</span><span class="sp"></span>
+      <span class="row">
+        <select id="act-date" onchange="reloadActivity()" aria-label="选择日期"></select>
+        <button class="btn sm" onclick="reloadActivity()">
+          <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button>
+      </span></h2>
+    <div id="p-activity"></div>
+  </div>
+
+  <div class="group-title" id="g-memory"><span class="gdot"></span>她记着什么</div>
+  <div class="card">
+    <h2><span class="n">B06</span><svg class="ico" aria-hidden="true"><use href="#i-db"></use></svg>
+      <span class="ttl">人物记忆</span><span class="sp"></span>
+      <button class="btn sm" onclick="load('memory')">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-memory"></div>
+    <div class="note">按 QQ 号记「某个人是什么样的人」—— <b>留不留由你决定</b>：
+      她觉得值得记的人先挂起，你点批准才落盘。群本身的事在下面 B07，那套不走批准。</div>
+  </div>
+  <div class="card">
+    <h2><span class="n">B07</span><svg class="ico" aria-hidden="true"><use href="#i-users"></use></svg>
+      <span class="ttl">群聊记忆</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadGroupMemory()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-groupmem"></div>
+    <div class="note">跟<b>群</b>走、不跟人走 —— 「这个群管她叫什么、常聊什么、有什么规矩」。
+      不需要你点头（留不留由条数上限和重置周期管）。</div>
+  </div>
+  <div class="card orphan2">
+    <h2><span class="n">B08</span><svg class="ico" aria-hidden="true"><use href="#i-chat"></use></svg>
+      <span class="ttl">会话上下文</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadSessions()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-sessions"></div>
+  </div>
+
+  <div class="group-title" id="g-persona"><span class="gdot"></span>她的设定</div>
+  <div class="card">
+    <h2><span class="n">B09</span><svg class="ico" aria-hidden="true"><use href="#i-user"></use></svg>
+      <span class="ttl">人设</span><span class="sp"></span>
+      <button class="btn sm" onclick="loadPersona()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重载</button></h2>
+    <div id="p-persona"></div>
+  </div>
+  <div class="card span2">
+    <h2><span class="n">B10</span><svg class="ico" aria-hidden="true"><use href="#i-chat"></use></svg>
+      <span class="ttl">话术与列表</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadLists()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-lists"></div>
+    <div class="note">一行一条；<b>空行会被丢掉</b>，行首行尾的空格也会去掉。
+      超过条数或单条字数上限时后端会<b>直接报错</b>（不会静默截断），先改短再保存。</div>
+  </div>
+
+  <div class="group-title" id="g-access"><span class="gdot"></span>权限与名册</div>
+  <div class="card">
+    <h2><span class="n">B11</span><svg class="ico" aria-hidden="true"><use href="#i-shield"></use></svg>
+      <span class="ttl">权限与名单</span><span class="sp"></span><span class="pill acc">可编辑</span></h2>
+    <div id="p-access"></div>
+  </div>
+  <div class="card span2">
+    <h2><span class="n">B12</span><svg class="ico" aria-hidden="true"><use href="#i-users"></use></svg>
+      <span class="ttl">跨群</span><span class="sp"></span>
+      <button class="btn sm" onclick="refreshGroups(this)">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重拉群名册</button></h2>
+    <div id="p-crossgroup"></div>
+    <div class="note">管理员在<b>私聊</b>里说「把某个群的某人禁言 10 分钟」时，
+      她先翻<b>群名册</b>认群、再翻该群的<b>成员名单</b>认人。
+      认不出群、认不出人、或者有好几个像的 —— 她只会问清楚，<b>不会动手</b>。</div>
+  </div>
+
+  <div class="group-title" id="g-content"><span class="gdot"></span>内容与出图</div>
+  <div class="card wide">
+    <h2><span class="n">B13</span><svg class="ico" aria-hidden="true"><use href="#i-image"></use></svg>
+      <span class="ttl">SD 出图与配额</span><span class="sp"></span>
+      <button class="btn sm" onclick="load('sd')">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-sd"></div>
+  </div>
+  <div class="card wide">
+    <h2><span class="n">B14</span><svg class="ico" aria-hidden="true"><use href="#i-smile"></use></svg>
+      <span class="ttl">表情包库</span><span class="sp"></span>
+      <button class="btn sm" onclick="load('stickers')">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-stickers"></div>
+  </div>
+
+  <div class="group-title" id="g-ext"><span class="gdot"></span>外部服务</div>
+  <div class="card span2">
+    <h2><span class="n">B15</span><svg class="ico" aria-hidden="true"><use href="#i-image"></use></svg>
+      <span class="ttl">识图</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadVision()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-vision"></div>
+    <div class="note">她能不能看懂别人发的图，取决于这里的<b>后端</b>：「自动」是<b>云端优先、
+      失败退本地</b>。云端走 deepseek-flash 的原生视觉，本地走 LM Studio 的 VL 模型。
+      后端选「不看图」时她不解析任何图片。</div>
+  </div>
+  <div class="card">
+    <h2><span class="n">B16</span><svg class="ico" aria-hidden="true"><use href="#i-zap"></use></svg>
+      <span class="ttl">B站登录</span><span class="sp"></span>
+      <button class="btn sm" onclick="checkBiliLogin(this)">
+        <svg class="ico" aria-hidden="true"><use href="#i-key"></use></svg>检查并登录</button></h2>
+    <div id="p-bili"></div>
+  </div>
+
+  <div class="group-title" id="g-diag"><span class="gdot"></span>调参与诊断</div>
+  <div class="card wide">
+    <h2><span class="n">B17</span><svg class="ico" aria-hidden="true"><use href="#i-sliders"></use></svg>
+      <span class="ttl">阈值与手感调节</span><span class="sp"></span><span class="pill acc">可拖动</span>
+      <button class="btn sm" onclick="reloadTunables()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重载</button></h2>
+    <div id="p-tunables"></div>
+    <div class="note">拖动松手即保存并<b>立即生效</b>（写回 config.json，改前留一份滚动快照到
+      <kbd>_backup\console-config-last.json</kbd>）。白名单制：只有列在这里的项能改，
+      密钥类字段不受影响。</div>
+  </div>
+  <div class="card wide">
+    <h2><span class="n">B18</span><svg class="ico" aria-hidden="true"><use href="#i-sliders"></use></svg>
+      <span class="ttl">功能开关</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadSwitches()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="p-switches"></div>
+    <div class="note">这里每一项都对应 <kbd>config.json</kbd> 里的一个开关，切换即落盘、
+      <b>立即生效</b>（改前留一份快照到 <kbd>_backup\console-config-last.json</kbd>）。
+      密钥类字段不在其中，改不到。</div>
+  </div>
+  <div class="card wide">
+    <h2><span class="n">B19</span><svg class="ico" aria-hidden="true"><use href="#i-file"></use></svg>
+      <span class="ttl">脱敏后的配置</span></h2>
+    <div id="p-config"></div>
+  </div>
+  <div class="card wide">
+    <h2><span class="n">B20</span><svg class="ico" aria-hidden="true"><use href="#i-list"></use></svg>
+      <span class="ttl">日志</span><span class="sp"></span>
+      <span class="row">
+        <svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="text" id="log-search" placeholder="在日志里搜（/）" oninput="filterLogs()"
+          aria-label="搜索日志">
+      </span>
+      <label class="chip" title="只看 ERROR / CRITICAL">
+        <span class="switch"><input type="checkbox" id="log-errors" onchange="filterLogs()"><i></i></span>
+        只看错误</label>
+      <select id="log-source" onchange="reloadLogs()" aria-label="日志来源">
+        <option value="bot">Bot</option>
+        <option value="qzone">空间桥接</option>
+        <option value="napcat">NapCat</option>
+      </select>
+      <select id="log-level" onchange="reloadLogs()" aria-label="日志级别">
+        <option value="">全部级别</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR,CRITICAL">ERROR</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+      <select id="log-lines" onchange="reloadLogs()" aria-label="日志行数">
+        <option value="100">100 行</option>
+        <option value="200" selected>200 行</option>
+        <option value="500">500 行</option>
+        <option value="1000">1000 行</option>
+      </select>
+      <button class="btn sm" onclick="reloadLogs()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div class="scroll logbox" id="p-logs"></div>
+    <div class="note">日志输出已过脱敏（api_key / access_token 等显示为 ***）。</div>
+  </div>
+</section>
+
+<!-- ══════════════ 空间 ══════════════ -->
+<section id="tab-qzone" class="tab grid">
+
+  <div class="group-title" id="g-qconn"><span class="gdot"></span>连接状态</div>
+  <div class="card">
+    <h2><span class="n">Q01</span><svg class="ico" aria-hidden="true"><use href="#i-key"></use></svg>
+      <span class="ttl">Cookie 保活</span><span class="sp"></span>
+      <button class="btn sm" onclick="refreshAll(true)">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="q-status"></div>
+  </div>
+  <div class="card span2">
+    <h2><span class="n">Q02</span><svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>
+      <span class="ttl">轮询状态</span></h2>
+    <div id="q-pollers"></div>
+  </div>
+
+  <div class="group-title" id="g-qfunc"><span class="gdot"></span>功能与额度</div>
+  <div class="card wide">
+    <h2><span class="n">Q03</span><svg class="ico" aria-hidden="true"><use href="#i-zap"></use></svg>
+      <span class="ttl">空间功能与额度</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadQzoneFeatures()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>刷新</button></h2>
+    <div id="q-features"></div>
+  </div>
+
+  <div class="group-title" id="g-qflow"><span class="gdot"></span>数据流</div>
+  <div class="card">
+    <h2><span class="n">Q04</span><svg class="ico" aria-hidden="true"><use href="#i-check"></use></svg>
+      <span class="ttl">她今天在空间做了什么</span></h2>
+    <div id="q-actions"></div>
+    <div class="note">数据来自当天的行为流水（只筛空间相关动作），不是猜的。</div>
+  </div>
+  <div class="card span2">
+    <h2><span class="n">Q05</span><svg class="ico" aria-hidden="true"><use href="#i-rss"></use></svg>
+      <span class="ttl">说说流</span></h2>
+    <div class="scroll" id="q-posts"></div>
+  </div>
+  <div class="card wide">
+    <h2><span class="n">Q06</span><svg class="ico" aria-hidden="true"><use href="#i-bell"></use></svg>
+      <span class="ttl">事件流</span></h2>
+    <div class="scroll" id="q-events"></div>
+    <div class="note">仅显示本次桥接进程启动后「实际下发过」的事件（内存环形缓冲，上限 200 条）。</div>
+  </div>
+</section>
+</main>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<div id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p id="modal-body"></p>
+    <div class="acts">
+      <button class="btn" id="modal-cancel">取消</button>
+      <button class="btn primary" id="modal-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" hidden role="dialog" aria-modal="true" aria-label="图片预览">
+  <img id="lb-img" alt="">
+  <button class="lb-nav prev" id="lb-prev" aria-label="上一张">
+    <svg class="ico" aria-hidden="true"><use href="#i-left"></use></svg></button>
+  <button class="lb-nav next" id="lb-next" aria-label="下一张">
+    <svg class="ico" aria-hidden="true"><use href="#i-right"></use></svg></button>
+  <button class="btn sm" id="lb-close">
+    <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>关闭</button>
+  <div id="lb-cap"></div>
+</div>
+
+<script>
+'use strict';
+var TOKEN_KEY = 'qqbotConsoleToken';
+var THEME_KEY = 'qqbotConsoleTheme';
+var TITLE_BASE = '许杏玖 · 控制台';
+
+/* ────────── 小工具 ────────── */
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function two(n){ return String(n).padStart(2, '0'); }
+function fmtTime(sec){
+  if(!sec) return '—';
+  var d = new Date(sec * 1000);
+  return two(d.getMonth()+1)+'-'+two(d.getDate())+' '+two(d.getHours())+':'+two(d.getMinutes());
+}
+function fmtClock(sec){
+  var d = new Date((sec || Date.now()/1000) * 1000);
+  return two(d.getHours())+':'+two(d.getMinutes())+':'+two(d.getSeconds());
+}
+function fmtAgo(sec){
+  if(!sec) return '—';
+  var s = Math.max(0, Math.floor(Date.now()/1000 - sec));
+  if(s < 60) return s + ' 秒前';
+  if(s < 3600) return Math.floor(s/60) + ' 分前';
+  if(s < 86400) return Math.floor(s/3600) + ' 小时前';
+  return Math.floor(s/86400) + ' 天前';
+}
+function fmtDur(sec){
+  if(sec == null) return '—';
+  sec = Math.round(sec);
+  if(sec < 60) return sec + ' 秒';
+  if(sec < 3600) return Math.floor(sec/60) + ' 分 ' + (sec%60) + ' 秒';
+  var h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  if(h < 24) return h + ' 小时 ' + m + ' 分';
+  return Math.floor(h/24) + ' 天 ' + (h%24) + ' 小时';
+}
+function fmtBytes(n){
+  if(!n) return '0 B';
+  if(n < 1024) return n + ' B';
+  if(n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  return (n/1048576).toFixed(2) + ' MB';
+}
+
+/* ────────── 片段 ────────── */
+function pill(t, c){ return '<span class="pill '+(c||'')+'">'+esc(t)+'</span>'; }
+function kv(pairs){
+  return '<dl class="kv">' + pairs.map(function(p){
+    return '<dt>'+esc(p[0])+'</dt><dd>'+(p[1] == null ? '—' : p[1])+'</dd>';
+  }).join('') + '</dl>';
+}
+/* 宽卡里把 kv 摊成两列：两棵独立的 dl，列内自然对齐 */
+function kv2(pairs){
+  var half = Math.ceil(pairs.length / 2);
+  return '<div class="two-col">' + kv(pairs.slice(0, half)) + kv(pairs.slice(half)) + '</div>';
+}
+/* kv 摊 n 列（2~4）：容器够宽就铺开，窄了由 CSS 的 auto-fit 自动回落，不用写媒体查询。
+   kv2 只留两根轨道，宽卡里仍然右半边空着；这里按卡宽给到 3 列/4 列 */
+function kvN(pairs, n){
+  n = Math.max(2, Math.min(4, n || 3));
+  var per = Math.ceil(pairs.length / n), out = [];
+  for(var i = 0; i < pairs.length; i += per) out.push(kv(pairs.slice(i, i + per)));
+  return '<div class="kv-grid k' + n + '">' + out.join('') + '</div>';
+}
+function stat(v, k, cls){
+  return '<div class="stat '+(cls||'')+'"><div class="v">'+esc(v)+'</div>'+
+         '<div class="k">'+esc(k)+'</div></div>';
+}
+function statsBox(list, cls){ return '<div class="stats' + (cls ? ' ' + cls : '') + '">' +
+  list.join('') + '</div>'; }
+function empty(m){ return '<div class="empty">'+esc(m)+'</div>'; }
+function errBox(e){ return '<div class="err">'+esc(e && e.message ? e.message : e)+'</div>'; }
+function stepsBox(list){
+  return '<ol class="steps">' + list.map(function(s){ return '<li>'+s+'</li>'; }).join('') + '</ol>';
+}
+/* 一条列表行：左缩略图/头像 + 中间标题与 chip + 右侧动作
+   （人物记忆 / 好感心情 / 表情包 / 群聊记忆 共用） */
+function itemRow(o){
+  var h = '<div class="item">';
+  if(o.thumb) h += o.thumb;
+  h += '<div class="item-main">';
+  if(o.top) h += '<div class="item-meta">' + o.top + '</div>';
+  if(o.body) h += o.body;
+  if(o.sub) h += '<div class="sub">' + o.sub + '</div>';
+  h += '</div>';
+  if(o.acts) h += '<div class="acts">' + o.acts + '</div>';
+  return h + '</div>';
+}
+function skeleton(n){
+  var s = '', i = n || 3;
+  while(i-- > 0) s += '<div class="skel"></div>';
+  return s;
+}
+function quota(used, cap){
+  if(cap <= 0) return pill('不限量', 'acc');
+  var pct = Math.min(100, Math.round(used / cap * 100));
+  return '<div class="quota"><div class="quota-top"><span>' + used + ' / ' + cap + '</span>' +
+    (used >= cap ? pill('已满', 'bad') : '') + '</div>' +
+    '<div class="bar"><i class="' + (pct >= 100 ? 'full' : '') + '" data-pct="' + pct + '"></i></div></div>';
+}
+/* 一条 0-100 的横向进度条。≥50 用绿、<50 用红（只表示好坏，跟涨跌无关） */
+function pctBar(label, v, tiers){
+  var n = Math.max(0, Math.min(100, Math.round(v || 0)));
+  /* 分档着色（50 中性不是唯一分界）：低于 30 红、45 以下黄、85 以上绿，中间蓝。
+     调用方给 tiers（[[上限,"说法"],…]）就把档位边界画成刻度线，
+     "划分细腻"在面板上才看得见 —— 不然后端分了 10 档，条上还是一根实色。 */
+  var cls = n >= 85 ? 'lv-hi' : n >= 45 ? 'lv-ok' : n >= 30 ? 'lv-mid' : 'lv-lo';
+  var ticks = '';
+  if(tiers && tiers.length > 1){
+    for(var i = 0; i < tiers.length - 1; i++){
+      var p = Math.max(0, Math.min(100, Number(tiers[i].hi) || 0));
+      ticks += '<s style="left:' + p + '%"></s>';
+    }
+  }
+  return '<div class="pctbar"><span class="pctbar-k">' + esc(label) + '</span>' +
+    '<div class="bar"><i class="' + cls + '" data-pct="' + n + '"></i>' + ticks + '</div>' +
+    '<span class="pctbar-v">' + n + '/100</span></div>';
+}
+
+/* 天气小格：.wstrip 里的一格（上面是数值、下面是名目）。
+   值可能是 0（降水 0mm 是真的 0），所以判空只认 null/undefined/''。 */
+function wcell(k, v, unit){
+  var has = (v !== null && v !== undefined && v !== '');
+  return '<div class="m"><div class="v">' + (has ? esc(v) + esc(unit || '') : '—') +
+    '</div><div class="k">' + esc(k) + '</div></div>';
+}
+
+/* 档位图例：一排小方块 + 说法（mood 面板用）。
+   图例是**共享**的一份（整张表的档名都列出来），所以不点亮点某一档 ——
+   各人落在哪一档看他自己那两条进度条上的刻度线。 */
+function tierLegend(tiers){
+  if(!tiers || !tiers.length) return '';
+  var h = '<div class="tier-legend">';
+  for(var i = 0; i < tiers.length; i++){
+    h += '<span><b></b>' + esc(tiers[i].label) + '</span>';
+  }
+  return h + '</div>';
+}
+
+/* ────────── 重绘引擎 ──────────
+   1) 数据没变就不重写 innerHTML（否则每 5 秒整块闪一次、hover 也被清掉）
+   2) 焦点落在面板里的输入控件上时跳过该面板（管理员 QQ 输入框不会被刷掉）
+   3) 重绘前后保存/恢复各 .scroll 的滚动位置（日志、轨迹不再跳回顶部）
+   4) 数字真的变了才加 .flash */
+var RENDERED = {};   // boxId → 上次写进 DOM 的数据签名
+var STATV = {};      // boxId → 上次各 .stat .v 的文本
+
+function syncBars(root){
+  var list = root.querySelectorAll('[data-pct]');
+  for(var i = 0; i < list.length; i++){
+    var n = Number(list[i].getAttribute('data-pct'));
+    if(!isFinite(n)) continue;
+    list[i].style.width = Math.max(0, Math.min(100, n)) + '%';
+  }
+}
+function focusInside(el){
+  var a = document.activeElement;
+  if(!a) return false;
+  var t = (a.tagName || '').toUpperCase();
+  if(t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') return false;
+  return el.contains(a);
+}
+function flashStats(el, id){
+  var vs = el.querySelectorAll('.stat .v'), prev = STATV[id] || [], now = [];
+  for(var i = 0; i < vs.length; i++){
+    var t = vs[i].textContent;
+    now.push(t);
+    if(prev[i] != null && prev[i] !== t) vs[i].classList.add('flash');
+  }
+  STATV[id] = now;
+}
+function scrollers(el){
+  var out = [];
+  if(el.classList.contains('scroll')) out.push(el);
+  var n = el.querySelectorAll('.scroll');
+  for(var i = 0; i < n.length; i++) out.push(n[i]);
+  return out;
+}
+function setBox(id, html, sig){
+  var el = $(id);
+  if(!el) return;
+  if(sig === undefined) delete RENDERED[id];          // 骨架屏 / 报错块：强制下一次真实渲染
+  else if(RENDERED[id] === sig) return;               // 数据没变 → 不碰 DOM
+  if(focusInside(el)) return;                         // 用户正在这块里输入 → 不打断
+  var before = scrollers(el), tops = [];
+  for(var i = 0; i < before.length; i++) tops.push(before[i].scrollTop);
+  el.innerHTML = html;
+  var after = scrollers(el);
+  for(var j = 0; j < after.length && j < tops.length; j++) after[j].scrollTop = tops[j];
+  syncBars(el);
+  if(sig !== undefined){ RENDERED[id] = sig; flashStats(el, id); }
+}
+
+/* ────────── 主题 ────────── */
+var THEME_ANIM_T = null;
+function applyTheme(t, animate){
+  document.documentElement.setAttribute('data-theme', t);
+  try{ localStorage.setItem(THEME_KEY, t); }catch(e){}
+  // 深浅切换给这几类容器挂一层过渡（html.theme-anim），不然是"啪"地整页跳色。
+  // 只在切换这一下挂，平时不加全局 transition —— 否则日志每次重绘都拖一层动画。
+  if(animate !== false){
+    var root = document.documentElement;
+    root.classList.add('theme-anim');
+    clearTimeout(THEME_ANIM_T);
+    THEME_ANIM_T = setTimeout(function(){ root.classList.remove('theme-anim'); }, 520);
+  }
+  var b = $('theme-btn');
+  if(!b) return;
+  var dark = (t === 'dark');
+  b.setAttribute('title', dark ? '切换浅色主题（快捷键 t）' : '切换深色主题（快捷键 t）');
+  var l = b.querySelector('.btxt');
+  if(l) l.textContent = dark ? '浅色' : '深色';
+  var u = b.querySelector('use');
+  if(u) u.setAttribute('href', dark ? '#i-moon' : '#i-sun');
+}
+function toggleTheme(){
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark', true);
+}
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark', false);   // 首次进入不做过渡动画
+
+/* ────────── 令牌 ────────── */
+(function absorbToken(){
+  var p = new URLSearchParams(location.search);
+  var t = p.get('token');
+  if(!t) return;
+  try{ localStorage.setItem(TOKEN_KEY, t); }catch(e){}
+  p.delete('token');
+  var q = p.toString();
+  history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
+})();
+
+function forgetToken(){
+  try{ localStorage.removeItem(TOKEN_KEY); }catch(e){}
+  toast('ok', '已清除本机令牌', '刷新页面后会重新询问');
+}
+
+var tokenAsking = false;
+function rawFetch(path, opts){
+  var h = {'x-console-token': localStorage.getItem(TOKEN_KEY) || ''};
+  if(opts && opts.headers){
+    for(var k in opts.headers) h[k] = opts.headers[k];
+  }
+  var o = {method: (opts && opts.method) || 'GET', headers: h};
+  if(opts && opts.body) o.body = opts.body;
+  return fetch(path, o);
+}
+
+async function api(path){
+  var res = await rawFetch(path, {method: 'GET'});
+  if(res.status === 401 && !tokenAsking){
+    tokenAsking = true;
+    var t = prompt('请输入控制台访问令牌：\n（见项目里的 state\\console-token，或 config.json 的 console.token）');
+    tokenAsking = false;
+    if(t){ localStorage.setItem(TOKEN_KEY, t.trim()); res = await rawFetch(path, {method: 'GET'}); }
+    else throw new Error('未提供令牌');
+  }
+  var body;
+  try{ body = await res.json(); }
+  catch(e){ throw new Error('响应不是 JSON（HTTP ' + res.status + '）'); }
+  if(!res.ok && body && body.ok !== false) body = {ok: false, error: 'HTTP ' + res.status};
+  return body;
+}
+
+async function apply(op, payload){
+  var res = await rawFetch('/api/bot/apply', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({op: op, payload: payload})
+  });
+  var body;
+  try{ body = await res.json(); }
+  catch(e){ throw new Error('响应不是 JSON（HTTP ' + res.status + '）'); }
+  if(!res.ok || body.ok === false) throw new Error(body.error || ('HTTP ' + res.status));
+  return body;
+}
+
+/* ────────── 提示 ────────── */
+function dismissToast(el, delay){
+  clearTimeout(el._t);
+  el._t = setTimeout(function(){
+    el.classList.add('out');
+    setTimeout(function(){ el.remove(); }, 320);
+  }, delay);
+}
+function toast(kind, title, body){
+  var host = $('toasts');
+  var key = (kind || '') + '|' + title;
+  var same = null, kids = host.children;
+  for(var i = 0; i < kids.length; i++) if(kids[i].dataset.k === key) same = kids[i];
+  if(same){                       // 同类合并：不刷屏，只把次数加上去
+    var tc = same.querySelector('.tc');
+    tc.dataset.n = String(Number(tc.dataset.n || 1) + 1);
+    tc.textContent = '×' + tc.dataset.n;
+    same.classList.add('multi');
+    dismissToast(same, kind === 'bad' ? 9000 : 4200);
+    return;
+  }
+  while(host.children.length >= 4) host.removeChild(host.firstElementChild);
+  var el = document.createElement('div');
+  el.className = 'toast ' + (kind || '');
+  el.dataset.k = key;
+  el.innerHTML = '<div class="tt">' + esc(title) + '<span class="tc" data-n="1">×1</span></div>' +
+                 (body ? '<div class="tb">' + esc(body) + '</div>' : '');
+  host.appendChild(el);
+  dismissToast(el, kind === 'bad' ? 9000 : 4200);
+}
+
+/* ────────── 确认框（模态） ────────── */
+function askConfirm(title, body, okLabel){
+  return new Promise(function(resolve){
+    var m = $('modal'), ok = $('modal-ok'), cancel = $('modal-cancel');
+    var back = document.activeElement;
+    $('modal-title').textContent = title;
+    $('modal-body').textContent = body || '';
+    ok.textContent = okLabel || '确定';
+    m.hidden = false;
+    ok.focus();
+    function done(v){
+      m.hidden = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      m.removeEventListener('click', onBg);
+      document.removeEventListener('keydown', onKey, true);
+      if(back && back.focus){ try{ back.focus(); }catch(e){} }   // 焦点还给触发它的那个按钮
+      resolve(v);
+    }
+    function onOk(){ done(true); }
+    function onCancel(){ done(false); }
+    function onBg(e){ if(e.target === m) done(false); }
+    function onKey(e){
+      if(e.key === 'Escape'){ e.preventDefault(); done(false); }
+      else if(e.key === 'Enter' && e.target !== cancel){ e.preventDefault(); done(true); }
+      else if(e.key === 'Tab'){                 // Tab 只在框内循环
+        e.preventDefault();
+        (document.activeElement === ok ? cancel : ok).focus();
+      }
+    }
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    m.addEventListener('click', onBg);
+    document.addEventListener('keydown', onKey, true);
+  });
+}
+
+async function doWrite(o){
+  if(o.confirm){
+    var yes = await askConfirm(o.confirm.title, o.confirm.body, o.confirm.ok);
+    if(!yes) return null;
+  }
+  if(o.btn) o.btn.disabled = true;
+  try{
+    var r = await apply(o.op, o.payload);
+    toast('ok', o.okTitle || '已保存', r.note || '');
+    if(o.after) await o.after();
+    return r;
+  }catch(e){
+    toast('bad', o.errTitle || '操作失败', String(e && e.message || e));
+    return null;
+  }finally{
+    if(o.btn) o.btn.disabled = false;
+  }
+}
+
+/* ────────── 图片 ──────────
+   <img> 带不了自定义请求头，所以令牌走 query（服务端 _token_ok 本来就支持）。
+   w>0 时服务端用 Pillow 压成缩略图 —— 出图动辄几百 KB，面板一次铺十几张，
+   不缩略图会白烧带宽（实测 820KB → 7KB）。
+   看大图走页内灯箱：不再 window.open 新标签，?token= 就不会留在浏览器历史里。 */
+function imgUrl(name, w, dir){
+  return '/api/bot/image?name=' + encodeURIComponent(name) +
+         '&w=' + (w || 0) +
+         (dir ? '&dir=' + encodeURIComponent(dir) : '') +
+         '&token=' + encodeURIComponent(localStorage.getItem(TOKEN_KEY) || '');
+}
+var LB_LIST = [], LB_AT = 0, LB_BACK = null;
+function paintLightbox(){
+  var img = LB_LIST[LB_AT];
+  if(!img) return;
+  var big = $('lb-img');
+  big.src = img.getAttribute('data-orig') || img.src;
+  big.alt = img.getAttribute('data-cap') || '';
+  $('lb-cap').textContent = (img.getAttribute('data-cap') || '') +
+    (LB_LIST.length > 1 ? '　' + (LB_AT + 1) + ' / ' + LB_LIST.length : '');
+  $('lb-prev').hidden = $('lb-next').hidden = LB_LIST.length < 2;
+}
+function lbStep(d){
+  if(LB_LIST.length < 2) return;
+  LB_AT = (LB_AT + d + LB_LIST.length) % LB_LIST.length;
+  paintLightbox();
+}
+function closeLightbox(){
+  var lb = $('lightbox');
+  if(lb.hidden) return;
+  lb.hidden = true;
+  $('lb-img').removeAttribute('src');
+  if(LB_BACK && LB_BACK.focus){ try{ LB_BACK.focus(); }catch(e){} }
+  LB_BACK = null;
+}
+function openImage(el){
+  var img = (el && el.tagName === 'IMG') ? el : (el ? el.querySelector('img') : null);
+  if(!img) return;
+  var host = (el.closest && el.closest('[data-gallery]')) || img.parentNode;
+  var all = host ? [].slice.call(host.querySelectorAll('img[data-orig]')) : [];
+  LB_LIST = all.length ? all : [img];
+  LB_AT = Math.max(0, LB_LIST.indexOf(img));
+  LB_BACK = document.activeElement;
+  $('lightbox').hidden = false;
+  paintLightbox();
+  $('lb-close').focus();
+}
+$('lightbox').addEventListener('click', function(e){ if(e.target === this) closeLightbox(); });
+$('lb-close').addEventListener('click', closeLightbox);
+$('lb-prev').addEventListener('click', function(){ lbStep(-1); });
+$('lb-next').addEventListener('click', function(){ lbStep(1); });
+
+/* 一条图片卡片（缩略图 + 文件名，点开进灯箱看原图）。
+   这里不加 loading="lazy"：快照最多 24 张、服务端已压成 ~7KB 的缩略图，
+   一次加载完，图廊不会因为滚动位置而一片空白（表情包列表另算，那条会很长）。 */
+function shot(name, dir, size){
+  return '<figure class="shot" tabindex="0" title="' +
+    esc(name + (size ? ' · ' + fmtBytes(size) : '')) + '" onclick="openImage(this)">' +
+    '<img src="' + imgUrl(name, 200, dir) + '" data-orig="' + imgUrl(name, 0, dir) +
+      '" data-cap="' + esc(name) + '" alt="" onerror="this.parentNode.classList.add(\'bad\')">' +
+    '<figcaption>' + esc(name) + '</figcaption></figure>';
+}
+/* ────────── Tab / 吸顶分区导航 ────────── */
+var tab = 'bot';
+var OBS = [], io = null;
+
+function setActiveNav(gid){
+  var btns = $('subnav').querySelectorAll('button');
+  for(var i = 0; i < btns.length; i++) btns[i].classList.toggle('on', btns[i].dataset.sec === gid);
+}
+function buildSubnav(){
+  var sec = $('tab-' + tab), host = $('subnav').querySelector('.in');
+  if(!sec || !host) return;
+  var gs = sec.querySelectorAll('.group-title'), html = '';
+  for(var i = 0; i < gs.length; i++){
+    if(!gs[i].id) gs[i].id = 'g-' + tab + '-' + i;
+    html += '<button type="button" data-sec="' + gs[i].id + '">' + esc(gs[i].textContent.trim()) + '</button>';
+  }
+  host.innerHTML = html;
+}
+function sectionOf(el){
+  var p = el.previousElementSibling;
+  while(p){ if(p.classList.contains('group-title')) return p.id; p = p.previousElementSibling; }
+  return null;
+}
+/* 顶栏高度写进 --stick，卡片/分区标题的 scroll-margin-top 就永远对得准吸顶条 */
+function stickOffset(){
+  var tb = $('topbar');
+  if(tb) document.documentElement.style.setProperty('--stick', (tb.offsetHeight + 12) + 'px');
+}
+function highlight(){
+  var zone = ($('topbar') ? $('topbar').offsetHeight : 130) + 12;
+  var best = null, bestTop = -1e9, first = null;
+  for(var i = 0; i < OBS.length; i++){
+    if(!OBS[i][1] || !OBS[i][0].offsetParent) continue;   // 不在当前 tab 里就跳过
+    if(!first) first = OBS[i][1];
+    var t = OBS[i][0].getBoundingClientRect().top;
+    if(t <= zone && t > bestTop){ best = OBS[i][1]; bestTop = t; }
+  }
+  setActiveNav(best || first || '');
+}
+function mapSections(){
+  OBS = [];
+  if(io) io.disconnect();
+  io = new IntersectionObserver(function(){ highlight(); },
+    {rootMargin:'-150px 0px -45% 0px', threshold:0});
+  var els = document.querySelectorAll('section.tab > .card, section.tab > .group-title');
+  for(var i = 0; i < els.length; i++){
+    var gid = els[i].classList.contains('group-title') ? els[i].id : sectionOf(els[i]);
+    OBS.push([els[i], gid]);
+    io.observe(els[i]);
+  }
+  highlight();
+}
+$('subnav').addEventListener('click', function(e){
+  var b = e.target.closest ? e.target.closest('button[data-sec]') : null;
+  if(!b) return;
+  var t = $(b.dataset.sec);
+  setActiveNav(b.dataset.sec);
+  if(t && t.scrollIntoView) t.scrollIntoView({behavior:'smooth', block:'start'});
+});
+window.addEventListener('resize', function(){ stickOffset(); highlight(); });
+
+function applyTab(name){
+  tab = name;
+  var names = ['bot', 'qzone'];
+  for(var i = 0; i < names.length; i++){
+    var t = names[i], sec = $('tab-' + t), btn = $('btn-' + t);
+    if(sec) sec.classList.toggle('on', t === name);
+    if(btn) btn.classList.toggle('on', t === name);
+  }
+  buildSubnav();
+  stickOffset();
+  highlight();
+}
+function showTab(name){
+  if(name !== 'bot' && name !== 'qzone') return;
+  try{ history.replaceState(null, '', location.pathname + location.search + '#' + name); }
+  catch(e){ location.hash = name; }
+  applyTab(name);
+  loadedTabs[name] = false;
+  refreshAll(true);
+}
+document.querySelectorAll('.tabs button').forEach(function(b){
+  b.addEventListener('click', function(){ showTab(b.dataset.tab); });
+});
+
+/* ────────── 快捷键 ──────────
+   1/2 切 tab、r 刷新、t 换主题、/ 定位日志搜索；焦点在输入框里时一律不抢 */
+document.addEventListener('keydown', function(e){
+  var lb = $('lightbox');
+  if(lb && !lb.hidden){
+    if(e.key === 'Escape'){ closeLightbox(); }
+    else if(e.key === 'ArrowLeft'){ lbStep(-1); }
+    else if(e.key === 'ArrowRight'){ lbStep(1); }
+    else return;
+    e.preventDefault();
+    return;
+  }
+  var a = document.activeElement, t = a ? (a.tagName || '').toUpperCase() : '';
+  if(t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || (a && a.isContentEditable)) return;
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  if(!$('modal').hidden) return;
+  if(e.key === 'Enter' && e.target.classList && e.target.classList.contains('shot')){
+    openImage(e.target); e.preventDefault(); return;
+  }
+  if(e.key === '1') showTab('bot');
+  else if(e.key === '2') showTab('qzone');
+  else if(e.key === 'r') refreshAll(true);
+  else if(e.key === 't') toggleTheme();
+  else if(e.key === '/'){ e.preventDefault(); var s = $('log-search'); if(s){ s.focus(); s.select(); } }
+});
+
+/* ────────── 顶栏 ────────── */
+function setTitle(state){
+  document.title = state === 'bad' ? '⚠ ' + TITLE_BASE
+    : (state === 'warn' ? TITLE_BASE + ' · 等待 NapCat' : TITLE_BASE);
+}
+async function loadHeader(){
+  var link = $('pill-link'), up = $('pill-uptime'), sync = $('pill-sync'), banner = $('offline-banner');
+  try{
+    var s = await api('/api/bot/status');
+    banner.style.display = 'none';
+    $('hd-self').textContent = s.self_id ? 'QQ ' + s.self_id : '';
+    var span = link.querySelector('span'), dot = link.querySelector('i');
+    if(s.loop_alive === false){
+      dot.className = 'dot bad'; span.textContent = 'Bot 离线'; setTitle('bad');
+    }else if(s.ws_connected){
+      dot.className = 'dot ok'; span.textContent = 'NapCat 已连接'; setTitle('ok');
+    }else{
+      dot.className = 'dot warn'; span.textContent = '等待 NapCat'; setTitle('warn');
+    }
+    up.textContent = '运行 ' + fmtDur(s.uptime);
+    sync.textContent = '已同步 ' + fmtClock();
+  }catch(e){
+    var msg = String(e && e.message || e);
+    var net = /Failed to fetch|NetworkError|Load failed/i.test(msg);
+    banner.style.display = net ? '' : 'none';
+    link.querySelector('i').className = 'dot bad';
+    link.querySelector('span').textContent = net ? '后端未连接' : '控制台异常';
+    up.textContent = '';
+    sync.textContent = net ? '同步失败' : msg.slice(0, 32);
+    setTitle('bad');
+  }
+}
+
+/* ────────── B01 ────────── */
+async function renderStatus(){
+  var s = await api('/api/bot/status');
+  // uptime 每秒都在变，但它不在这块面板里显示 —— 剔出签名，B01 就不为它白重绘一次
+  var sig = JSON.stringify(s.loop_alive === false ? s : Object.assign({}, s, {uptime: 0}));
+  if(s.loop_alive === false){
+    setBox('p-status-stats', stat('离线', 'Bot', 'bad'), sig);
+    setBox('p-status', errBox(s.note || 'bot 事件循环不可用') +
+      kv([['控制台存活', fmtDur(s.uptime)]]), sig);
+    $('stamp-status').textContent = '更新于 ' + fmtClock();
+    return;
+  }
+  var tk = s.tokens || {};
+  setBox('p-status-stats',
+    stat(s.ws_connected ? '在线' : '未连接', 'NapCat', s.ws_connected ? 'ok' : 'warn') +
+    stat(s.sessions, '活跃会话') +
+    stat(s.memory_people, '长期记忆') +
+    stat((tk.calls || 0), 'LLM 调用', 'acc'), sig);
+  var total = (tk.hit || 0) + (tk.miss || 0);
+  var rate = total ? ((tk.hit || 0) / total * 100).toFixed(0) + '%' : '—';
+  setBox('p-status', kvN([
+    ['Bot QQ', esc(s.self_id || '—')],
+    ['反向 WS', esc('ws://127.0.0.1:' + (s.ws_port || '—')) + ' ' +
+      (s.napcat_authed ? pill('已启用令牌','ok') : pill('无令牌','warn'))],
+    ['控制台', esc('http://127.0.0.1:' + (s.console_port || '—'))],
+    ['当前作息', esc(s.life_act || '未配置')],
+    ['天气城市', esc(s.weather_city || '关闭')],
+    ['活跃群', esc(s.active_groups)],
+    ['上次记忆重置', esc(s.memory_last_reset || '从未')],
+    ['人设长度', esc(s.persona_chars) + ' 字'],
+    ['消息去重表', esc(s.seen_messages) + ' 条'],
+    ['token 用量', '入 ' + esc(tk.in || 0) + ' / 出 ' + esc(tk.out || 0) +
+      '　' + pill('永久记录', 'acc')],
+    ['前缀缓存命中', esc(rate) + '（' + esc(tk.hit || 0) + ' 中 / ' + esc(tk.miss || 0) + ' 未中）'],
+    ['累计起始 / 最近写盘', esc(s.tokens_since || '—') + '　→　' + esc(s.tokens_updated || '—')],
+  ], 3), sig);
+  $('stamp-status').textContent = '更新于 ' + fmtClock();
+}
+
+/* ────────── B09 人设（可编辑，改动后才允许保存） ────────── */
+var PERSONA_FIELDS = [
+  ['persona',      '人格 persona',         '她是谁、怎么说话'],
+  ['world',        '世界 world',           '她所处的生活设定'],
+  ['style_boost',  '风格强化 style_boost', '额外的说话要求'],
+  ['style_format', '格式规范 style_format','分条 / 标点 / 格式约定'],
+  ['self_image',   '自画像 self_image',    '她对自己的描述'],
+  ['identity_guard', '身份红线 identity_guard', '被问身份时怎么答 / 禁用词表（常驻，最要紧）']
+];
+var PERSONA_ORIG = {};
+function personaDirty(key){
+  var el = $('pf-' + key);
+  if(!el) return;
+  var same = (el.value === PERSONA_ORIG[key]);
+  var btn = $('pf-save-' + key);
+  if(btn) btn.disabled = same;
+  var cnt = $('pf-cnt-' + key);
+  if(cnt) cnt.textContent = el.value.length + ' 字';
+}
+async function renderPersona(){
+  var d = await api('/api/bot/persona');
+  PERSONA_ORIG = {};
+  var html = '<div class="item-meta">唤醒前缀：' +
+    ((d.wake_prefix || []).map(function(w){
+      return '<span class="chip acc">'+esc(w)+'</span>';
+    }).join('') || '<span class="mini">—</span>') + '</div>';
+  PERSONA_FIELDS.forEach(function(f){
+    var key = f[0], label = f[1], hint = f[2];
+    var v = d[key] || '';
+    PERSONA_ORIG[key] = v;
+    html += '<div class="field sep"><label for="pf-' + key + '">' + esc(label) +
+      '<span class="sp"></span><span class="cnt" id="pf-cnt-' + key + '">' + v.length + ' 字</span>' +
+      '<button class="btn sm" id="pf-save-' + key + '" disabled ' +
+        'onclick="savePersona(\'' + key + '\', this)">保存</button></label>' +
+      '<textarea id="pf-' + key + '" rows="' + (key === 'persona' ? 4 : 3) + '" ' +
+      'placeholder="' + esc(hint) + '" oninput="personaDirty(\'' + key + '\')">' + esc(v) + '</textarea></div>';
+  });
+  html += '<div class="note">保存即写入 config.json 并立即生效（下一条回复就用新设定）。' +
+    '改前会自动留一份快照到 _backup\\console-config-last.json。</div>';
+  // 两个话术池：不进提示词，只在被问身份 / 模型挂掉时抽出来用
+  var pools = [['身份参照池 identity_lines', d.identity_lines || [],
+                '只有对方问到身份时才随机抽几条给她参照 —— 连着追问时她必须自己现编，防止复读同一句'],
+               ['失效兜底话术 reply_fallback_lines', d.reply_fallback_lines || [],
+                '模型调用失败时发给聊天对象的就是这里随机一句（技术原因另外私聊给管理员，不会静默）']];
+  pools.forEach(function(p){
+    html += '<div class="field sep"><label>' + esc(p[0]) +
+      '<span class="sp"></span><span class="mini">' + esc(p[1].length) + ' 条</span></label>' +
+      '<div class="item-meta">' + (p[1].map(function(l){
+        return '<span class="chip">' + esc(l) + '</span>';
+      }).join('') || '<span class="mini">（空）</span>') + '</div>' +
+      '<div class="note">' + esc(p[2]) + ' 改这两池要编辑 config.json（暂未开放面板编辑）。</div></div>';
+  });
+  setBox('p-persona', html, JSON.stringify(d));
+}
+async function savePersona(key, btn){
+  var el = $('pf-' + key);
+  if(!el) return;
+  await doWrite({
+    op: 'persona_set', payload: {field: key, value: el.value}, btn,
+    okTitle: '人设已更新',
+    after: async function(){ await renderPersona(); await loadHeader(); }
+  });
+}
+
+/* ────────── B03 生活作息 ────────── */
+async function renderLife(){
+  var d = await api('/api/bot/life');
+  var L = d.life || {};
+
+  // ── 栏 A：当前状态 + 关键参数 ──
+  var colA = statsBox([
+    stat(L.act || '未配置', '当前活动', 'acc'),
+    stat(L.busy ? '忙' : '闲', '状态', L.busy ? 'warn' : 'ok'),
+    stat(L.chance == null ? '—' : L.chance, '回复概率'),
+    // 天气那一格直接给温度（下面"外面的天气"整块才是明细）——
+    // 顶栏四个统计是一眼扫的地方，给城市名不如给温度有用
+    stat((d.weather && d.weather.data && d.weather.data.temp != null)
+      ? (d.weather.data.temp + '°') : (d.weather_city || '关闭'), '天气')
+  ]);
+  colA += kv2([
+    ['提示 hint', esc(L.hint || '—')],
+    ['今日小事', esc(L.event || '—')],
+    ['时间片', esc(L.time_str || '—')],
+    ['回复延迟', (d.delay || []).length ? esc(d.delay[0] + ' ~ ' + d.delay[1] + ' 秒') : '—'],
+    ['事件配额', esc(L.event_max_per_day == null ? '—' : ('每天 ' + L.event_max_per_day + ' 次'))]
+  ]);
+
+  // ── 栏 B：日程表 ──
+  var sch = d.schedule || [];
+  var colB = '';
+  if(sch.length){
+    colB = '<div class="lbl">日程表（' + sch.length + ' 段）</div>' +
+      '<div class="scroll"><table><thead><tr><th>时段</th><th>活动</th><th>忙</th><th>概率</th></tr>' +
+      '</thead><tbody>' +
+      sch.map(function(it){
+        // 用 schedule_act（作息表那一段）比对，不能用 L.act ——
+        // L.act 会被"她自己在做的事"盖掉，那样她一开始自主活动，日程表的
+        // 当前行高亮就消失了（看着像没在按作息走）
+        var cur = (it.act || '') === (L.schedule_act || L.act || '');
+        return '<tr' + (cur ? ' class="cur"' : '') + '><td>' +
+          esc((it.from || it.start || '?') + '–' + (it.to || it.end || '?')) + '</td><td>' +
+          esc(it.act || '') + (cur ? ' ' + pill('当前', 'acc') : '') + '</td><td>' +
+          (it.busy ? '是' : '') + '</td><td>' + esc(it.reply_chance) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  // ── 栏 C：她自己在做什么（与群冷热无关的日常）──
+  const sa = d.self_activity || {};
+  const run = sa.activity;
+  var colC = '<div class="field"><label>她自己在做什么' +
+    '<span class="sp"></span><span class="mini">与群冷热无关</span></label>';
+  if(run){
+    colC += kv([
+      ['正在做', '<b>' + esc(run.name) + '</b> ' +
+        pill('还剩 ' + fmtDur(run.left_seconds), 'acc')],
+      ['这会儿', esc(run.hint || '—')]
+    ]);
+  }else{
+    colC += '<div class="note">这会儿没在做特别的事' +
+      (sa.next_in_seconds ? '，大约 ' + esc(fmtDur(sa.next_in_seconds)) + '后会有下一件' : '') +
+      '。她不是按表走的，也可能什么都不做。</div>';
+  }
+  colC += kv([
+    ['今日地点', esc(sa.place_today || '—')],
+    ['活动池', esc(sa.pool_size) + ' 种玩法 · ' + esc((sa.places || []).length) + ' 个地点'],
+    ['节奏', '每 ' + esc((sa.gap_minutes || [])[0]) + '~' + esc((sa.gap_minutes || [])[1]) +
+      ' 分钟挑一件，每件持续 ' + esc((sa.duration_minutes || [])[0]) + '~' +
+      esc((sa.duration_minutes || [])[1]) + ' 分钟'],
+    ['什么都不做', '每次 ' + Math.round((sa.skip_chance || 0) * 100) + '% 概率跳过'],
+    ['手头素材', esc(sa.material || '（空）') +
+      (sa.material_age_seconds != null ? '　' + esc(fmtAgo(Date.now() / 1000 - sa.material_age_seconds)) : '')]
+  ]);
+  const evs = sa.today_events || [];
+  if(evs.length){
+    colC += '<div class="lbl">今天的小事（' + evs.length + ' 条）：</div><div class="item-meta">' +
+      evs.map(function(e){ return '<span class="chip acc">' + esc(e) + '</span>'; }).join('') + '</div>';
+  }
+  colC += '<div class="note">她的日常不再只挂在"群冷了"上 —— 她自己会按心情挑事做，' +
+    '做完攒下的素材留给她下次开口当话题。</div></div>';
+
+  /* ── 天气：后端一直在攒（体感/湿度/风/降水概率/紫外线/日出日落 + 刚察觉的变化 +
+        联网查到的预警），但面板上原先只显示一个城市名 —— 现在整块补齐。
+        用 wstrip/wnow 那套格子，窄了自动折行，深浅两色都跟主题走。 ── */
+  const W = d.weather || {}, wd = W.data || {};
+  var colW = '<div class="field"><label>外面的天气' +
+    '<span class="sp"></span><span class="mini">' +
+    (W.enable ? esc(wd.place || d.weather_city || '') : '未启用') + '</span></label>';
+  if(!W.enable){
+    colW += '<div class="note">天气没开（config 里 weather.enable）。开了她就会感知外面的变化，' +
+      '变天时还会上网查一眼预警。</div>';
+  }else if(!wd.temp && wd.temp !== 0){
+    colW += '<div class="note">还没取到天气（可能城市没查到坐标，或网络不通）。' +
+      '她这边不会报错，只是这一轮没有天气可说。</div>';
+  }else{
+    // 温度已经在顶栏那格给过了，这里只补一句"什么天"+ 更新时间，不再放大号数字
+    colW += '<div class="wnow"><span class="d">' + esc(wd.desc || '—') +
+      (wd.feels != null && Math.abs(wd.feels - wd.temp) >= 1
+        ? '　体感 ' + esc(wd.feels) + '°' : '') + '</span>' +
+      '<span class="sp"></span><span class="mini">' + esc(wd.at || '') + '</span></div>';
+    /* 只留 6 格：再多就要占三行，把这张卡撑得比"横向面板"该有的高度还高
+       （1024px 下 B03 会因此超过 600px 的验收线）。
+       日出/日落这种"知道就行"的挪进下面那行说明里。 */
+    colW += '<div class="wstrip">' +
+      wcell('体感', wd.feels, '°C') +
+      wcell('湿度', wd.humidity, '%') +
+      wcell('风', wd.wind, ' m/s') +
+      wcell('降水概率', wd.rain_p, '%') +
+      wcell('紫外线', wd.uv, '') +
+      wcell('今天', (wd.tmin != null && wd.tmax != null) ? (wd.tmin + '~' + wd.tmax) : '—', '°C') +
+      '</div>';
+    if(W.change){
+      colW += '<div class="note">刚察觉到：' + esc(W.change) + '</div>';
+    }
+    if(W.alert){
+      colW += '<div class="note">网上查到：' + esc(W.alert) +
+        (W.alert_age_seconds != null ? '（' + esc(fmtAgo(Date.now() / 1000 - W.alert_age_seconds)) + '前）' : '') +
+        '</div>';
+    }
+    colW += '<div class="note">每 ' + esc(W.tick_minutes) + ' 分钟看一次外面；' +
+      '骤变、下雨、起风、打雷算"变化"，记进流水并攒成话题，' +
+      '变化时还会联网查预警' + (W.alert_enable ? '' : '（已关）') + '。' +
+      ((wd.sunrise || wd.sunset) ? '　日出 ' + esc((wd.sunrise || '—').slice(-5)) +
+        ' / 日落 ' + esc((wd.sunset || '—').slice(-5)) : '') + '</div>';
+  }
+  colW += '</div>';
+
+  setBox('p-life', '<div class="life-grid"><div>' + colA + '</div>' +
+    (colB ? '<div>' + colB + '</div>' : '') +
+    '<div>' + colC + '</div>' +
+    '<div class="full">' + colW + '</div></div>', JSON.stringify(d));
+}
+
+/* ────────── B06 人物记忆（可编辑） ────────── */
+function itemText(t){
+  return typeof t === 'string' ? t : String((t && (t.fact || t.text)) || '');
+}
+async function renderMemory(){
+  var d = await api('/api/bot/memory');
+  var html = kv([
+    ['开关', d.enable ? pill('启用','ok') : pill('关闭','bad')],
+    ['重置点', esc(d.reset_hour) + ' 点，每 ' + esc(d.every_days) + ' 天'],
+    ['上次重置', esc(d.last_reset || '从未')],
+    ['自动抽取', d.extract ? pill('每 ' + d.extract_every + ' 条','ok') : pill('关')]
+  ]);
+
+  var pend = Object.keys(d.pending || {});
+  if(pend.length){
+    html += '<div class="lbl">待你批准（' + pend.length + '）</div><div class="items">';
+    pend.forEach(function(uin){
+      var p = d.pending[uin] || {};
+      html += itemRow({
+        top: '<span class="chip acc">' + esc(uin) + '</span>' +
+             (p.name ? '<span class="item-title">' + esc(p.name) + '</span>' : ''),
+        sub: p.why ? esc(p.why) : '',
+        acts: '<button class="btn sm primary" onclick="memApprove(\'' + esc(uin) + '\', this)">批准</button>' +
+              '<button class="btn sm danger" onclick="memDecline(\'' + esc(uin) + '\', this)">拒绝</button>'
+      });
+    });
+    html += '</div>';
+  }
+
+  var people = d.people || {};
+  var uins = Object.keys(people);
+  if(uins.length){
+    html += '<div class="lbl">按 QQ 号记的人（' + uins.length + '）</div>' +
+      '<div class="scroll"><div class="items">';
+    uins.forEach(function(uin){
+      var p = people[uin] || {};
+      var pinned = !!p.pinned, body = '';
+      [['traits','特点'], ['todos','待办']].forEach(function(kd){
+        var items = p[kd[0]] || [];
+        if(!items.length) return;
+        body += '<div class="lbl">' + kd[1] + '</div><div class="item-meta">' +
+          items.map(function(t, i){
+            return '<span class="chip">' + esc(itemText(t)) +
+              '<button title="删掉这条" onclick="memDeleteItem(\'' + esc(uin) + '\',\'' + kd[0] +
+              '\',' + i + ')">×</button></span>';
+          }).join('') + '</div>';
+      });
+      html += itemRow({
+        top: '<span class="chip acc">' + esc(uin) + '</span>' +
+             '<span class="item-title">' + esc(p.name || p.nick || '（无名）') + '</span>' +
+             (pinned ? pill('固定','ok') : ''),
+        body: body,
+        acts: pinned ? '' : '<button class="btn sm danger" onclick="memForget(\'' + esc(uin) +
+          '\', this)">忘掉</button>'
+      });
+    });
+    html += '</div></div>';
+  }else html += empty('还没有记下任何人。');
+
+  if((d.declined || []).length){
+    html += '<div class="note">已拒绝（不会再问）：' +
+      d.declined.map(function(u){ return '<span class="chip">' + esc(u) + '</span>'; }).join('') +
+      '</div>';
+  }
+
+  // 每轮现算的临时块：不落盘，给面板看一眼她"眼下"看到什么
+  var eph = d.ephemeral || [];
+  html += '<div class="note sep"><b>每轮刷新（不落盘）</b> —— ' +
+    esc(d.ephemeral_note || '') + '</div>';
+  html += eph.length
+    ? '<div class="items">' + eph.map(function(e){
+        return itemRow({ top: '<span class="chip acc">' + esc(e.key) + '</span>',
+                         sub: esc(e.text) });
+      }).join('') + '</div>'
+    : '<div class="note">当前没有活跃会话，所以这块是空的。</div>';
+  setBox('p-memory', html, JSON.stringify(d));
+}
+async function memApprove(uin, btn){
+  await doWrite({op: 'memory_approve', payload: {uin: uin}, btn, okTitle: '已批准',
+    after: async function(){ await renderMemory(); await renderStatus(); }});
+}
+async function memDecline(uin, btn){
+  await doWrite({op: 'memory_decline', payload: {uin: uin}, btn, okTitle: '已拒绝',
+    after: renderMemory});
+}
+async function memForget(uin, btn){
+  await doWrite({op: 'memory_forget', payload: {uin: uin}, btn, okTitle: '已忘掉',
+    confirm: {title: '忘掉这个人？',
+              body: '将从长期记忆里删除 ' + uin + ' 的全部特点与待办。\n（不可撤销）',
+              ok: '忘掉'},
+    after: async function(){ await renderMemory(); await renderStatus(); }});
+}
+async function memDeleteItem(uin, kind, index){
+  await doWrite({op: 'memory_item_delete', payload: {uin: uin, kind: kind, index: index},
+    okTitle: '已删除该条', after: renderMemory});
+}
+
+/* ────────── B04 好感与心情（两套独立，百分制） ────────── */
+async function renderMood(){
+  var d = await api('/api/bot/mood');
+  var html = statsBox([
+    stat(esc(d.scale || '0-100'), '分制'),
+    stat(esc(d.neutral), '中性值'),
+    stat((d.merged || []).length, '有记录的人')
+  ]);
+  html += kv2([
+    ['开关', d.enable ? pill('启用','ok') : pill('关闭','bad')],
+    ['好感变化', '被夸 +' + esc(d.affinity_gain) + ' · 被骂 −' + esc(d.affinity_loss) +
+      ' · 每天往 50 回落 ' + esc(d.affinity_decay_per_day)],
+    ['心情变化', '被夸 +' + esc(d.mood_gain) + ' · 被骂 −' + esc(d.mood_loss) + '（比好感波动大）'],
+    ['好感→心情', '每次更新心情往好感靠 ' + esc(d.mood_pull_to_affinity)],
+    ['档位划分', '好感 ' + esc(d.tier_count) + ' 档 · 心情 ' + esc(d.feel_tier_count || 8) + ' 档' +
+      (d.hysteresis > 0 ? '（停在边界上要超出 ' + esc(d.hysteresis) + ' 分才真的换档）' : '')],
+  ]);
+  html += '<div class="note">' +
+    '<b>好感</b>是对某人长期的印象（变化慢、会慢慢回落）；' +
+    '<b>心情</b>是此刻愿不愿意搭理他（变化快，并会被好感牵着走）。' +
+    '两者独立记，但好感高的人心情基线也更容易好。' +
+    '进度条上的刻度线就是档位边界 —— 同一档里也有档内进度，快跨档时提示词里会点出来。</div>';
+
+  var people = d.merged || [];
+  if(!people.length){
+    html += empty('还没有任何好感/心情记录（她在群里跟人处久了才会攒出来）。');
+  }else{
+    /* 档位图例（共享一份，标明每根条上刻度线对应的档名） */
+    html += tierLegend(d.tiers) +
+      '<div class="lbl">跨群合并（同一人取偏离中性最远的那个群）</div>' +
+      '<div class="scroll"><div class="items">';
+    html += people.map(function(m){
+      return itemRow({
+        top: '<span class="item-title">' + esc(m.name) + '</span>' +
+          '<span class="chip ' + (m.affinity < 50 ? 'neg' : 'pos') + '">' + esc(m.tag) + '</span>' +
+          (m.feel_tag ? '<span class="chip">' + esc(m.feel_tag) + '</span>' : '') +
+          '<span class="sp"></span><span class="mini">' + esc(m.uin) + '</span>',
+        body: pctBar('好感', m.affinity, d.tiers) + pctBar('心情', m.mood, d.feel_tiers)
+      });
+    }).join('') + '</div></div>';
+  }
+  setBox('p-mood', html, JSON.stringify(d));
+}
+
+/* ────────── B05 行为轨迹 ────────── */
+async function renderActivity(){
+  var sel = $('act-date');
+  var want = sel ? sel.value : '';
+  var d = await api('/api/bot/activity' + (want ? '?date=' + encodeURIComponent(want) : ''));
+  var days = d.days || [];
+  if(sel && sel.dataset.n !== String(days.length)){
+    sel.innerHTML = days.map(function(x){
+      return '<option value="' + esc(x.date) + '">' + esc(x.date) +
+        '（' + fmtBytes(x.size) + '）</option>';
+    }).join('') || '<option value="">（无记录）</option>';
+    sel.dataset.n = String(days.length);
+  }
+  var sig = JSON.stringify(d);
+  var day = d.day;
+  if(!day){ setBox('p-activity', empty('选择日期查看当天轨迹。'), sig); return; }
+  if(!day.exists){ setBox('p-activity', empty(day.date + ' 没有记录。'), sig); return; }
+  var kinds = {};
+  (day.entries || []).forEach(function(e){ kinds[e.kind] = (kinds[e.kind] || 0) + 1; });
+  var html = '<div class="item-meta">' +
+    Object.keys(kinds).map(function(k){
+      return '<span class="chip acc">' + esc(k) + ' × ' + kinds[k] + '</span>';
+    }).join('') + '</div><div class="scroll"><table><tbody>' +
+    (day.entries || []).map(function(e){
+      return '<tr><td class="mini nowrap">' + esc(e.hhmm) + '</td><td>' + pill(e.kind, 'acc') + '</td><td>' +
+        esc(e.text) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  if((day.pending || []).length)
+    html += '<div class="note">另有 ' + day.pending.length + ' 条尚未落盘（缓冲区）。</div>';
+  setBox('p-activity', html, sig);
+}
+/* ────────── B13 SD ────────── */
+async function renderSd(){
+  var d = await api('/api/bot/sd');
+  var caps = d.caps || {}, used = d.used || {}, can = d.can_draw || {};
+  var html = '<div class="item-meta">' +
+    (d.enable ? pill('已启用','ok') : pill('已关闭','bad')) +
+    '<span class="chip">' + esc(d.base_url) + '</span></div>';
+  html += '<div class="scroll-x"><table><thead><tr><th>用途</th><th>用量</th><th>可画</th>' +
+    '</tr></thead><tbody>' +
+    [['私聊（不限）','private'], ['群聊（24h 滚动）','group'], ['空间说说（自然日）','qzone']]
+    .map(function(row){
+      var label = row[0], k = row[1];
+      return '<tr><td class="sans">' + esc(label) + '</td><td>' +
+        quota(used[k] || 0, caps[k] || 0) + '</td><td>' +
+        (can[k] ? pill('可','ok') : pill('已满','bad')) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  var files = d.recent_files || [];
+  var right = '';
+  right += '<div class="gal-head"><span class="sub">最近产出（' + files.length +
+    ' 张，点缩略图看大图）</span><span class="sp"></span>' +
+    '<span class="mini">点开看原图 · ← → 切换</span></div>';
+  right += files.length
+    ? '<div class="gal" data-gallery>' + files.map(function(f){
+        return shot(f.name, 'generated', f.size);
+      }).join('') + '</div>'
+    : empty('还没有产出图片。');
+  // ── 出图模式：她自己的形象是固定的，画面内容按需要变 ──
+  if(d.character_tags){
+    const sz = d.sizes || {};
+    html += '<div class="field sep"><label>出图模式' +
+      '<span class="sp"></span><span class="mini">形象固定，画面按内容变</span></label>';
+    html += '<div class="item-meta">' +
+      '<span class="chip pos">只有她 ' + esc((sz.solo || []).join('×')) + '</span>' +
+      '<span class="chip acc">她+朋友 ' + esc((sz.duo || []).join('×')) + '</span>' +
+      '<span class="chip">纯景物 ' + esc((sz.scenery || []).join('×')) + '</span>' +
+      '<span class="chip">' + (d.hires && d.hires.enable
+        ? '二次放大 ×' + esc(d.hires.scale) : '未开二次放大') + '</span></div>';
+    html += kv([
+      ['她的固定形象', esc(d.character_tags)],
+      ['采样', esc(d.steps) + ' 步 · CFG ' + esc(d.cfg_scale) + ' · ' + esc(d.model_family)],
+      ['负面词', esc(d.negative_count) + ' 项（含 bad hands / extra fingers / fused fingers 等）'],
+    ]);
+    html += '<div class="note">' +
+      '<b>外貌只在配置里定义一次、由代码统一拼</b> —— 模型不许自己写她的长相，' +
+      '否则会和固定形象打架，就成了「每张图长得都不一样」。' +
+      '纯景物模式会把所有人物词都禁掉，所以画出来的真的没有人。</div></div>';
+  }
+  setBox('p-sd', '<div class="sd-grid"><div>' + html + '</div><div>' + right + '</div></div>',
+    JSON.stringify(d));
+}
+
+/* ────────── B14 表情包（可管理） ────────── */
+function stkSwitch(field, label, on, tip){
+  return '<label class="chip ' + (on ? 'acc' : '') + '" title="' + esc(tip || '') + '">' +
+    '<span class="switch"><input type="checkbox"' + (on ? ' checked' : '') +
+    ' onchange="toggleSticker(\'' + field + '\', this.checked, this)"><i></i></span>' +
+    esc(label) + '</label>';
+}
+function stickerRow(i){
+  var badge = i.native
+    ? '<span class="chip pos">QQ 原生表情</span>'
+    : '<span class="chip neg">无表情 ID</span>';
+  var tags = (i.tags || []).map(function(t){
+    return '<span class="chip">' + esc(t) + '</span>';
+  }).join('') || '<span class="mini">无标签</span>';
+  var img = i.file
+    ? '<img class="thumb" loading="lazy" src="' + imgUrl(i.file, 96, 'stickers') + '" alt="" ' +
+      'data-orig="' + imgUrl(i.file, 0, 'stickers') + '" data-cap="' + esc(i.file) + '" ' +
+      'onclick="openImage(this)" onerror="this.classList.add(\'broken\')">'
+    : '<div class="thumb-ph"></div>';
+  return itemRow({
+    thumb: img,
+    top: badge + (i.can_send ? '' : '<span class="chip neg">她不会用到</span>'),
+    body: '<div class="item-meta">' + tags + '</div>',
+    sub: '来自 ' + esc(i.who || '—') + ' · 用过 ' + esc(i.used) + ' 次' +
+      (i.emoji_id ? ' · 表情ID ' + esc(i.emoji_id) : ''),
+    acts: '<button class="btn sm danger" onclick="delSticker(\'' + esc(i.md5) + '\', this)">删</button>'
+  });
+}
+async function renderStickers(){
+  var d = await api('/api/bot/stickers');
+  window.__stickers = d;
+
+  var html = statsBox([
+    stat(d.count + ' / ' + d.max, '库里条数'),
+    stat(d.native_count, '可原生发送', d.native_count ? 'ok' : 'warn'),
+    stat(d.send_enable ? '会发' : '只收不发', '发送状态', d.send_enable ? 'ok' : 'warn')
+  ]);
+
+  html += '<div class="item-meta">' +
+    stkSwitch('enable', '启用表情包', d.enable, '总开关。关掉就不再收藏、也不会发。') +
+    stkSwitch('send_enable', '她会主动发表情包', d.send_enable, '关掉的话她只是收藏，不会往外发。') +
+    stkSwitch('only_animated', '只收动图', d.only_animated, '打开只收藏动图（GIF/动图 WebP）。') +
+    stkSwitch('judge_enable', '收藏前让模型判断', d.judge_enable,
+      '关掉会把收到的动图全部收下，容易收到不合适的。') +
+    stkSwitch('allow_image_fallback', '允许以图片形式发', d.allow_image_fallback,
+      '不推荐打开。打开后，没填 QQ 表情 ID 的条目会被当成一张图片发出去，而不是"表情"。') +
+    '</div>';
+
+  if(d.enable && !d.send_enable){
+    html += '<div class="note warn">' +
+      '注意：现在「她会主动发表情包」是<b>关</b>的，她只会收藏、不会发。要让她发，把上面那个开关打开。</div>';
+  }
+  if(d.allow_image_fallback){
+    html += '<div class="note warn">' +
+      '注意：现在允许以图片形式发送 —— 没有 QQ 表情 ID 的条目会以<b>图片</b>发出去。' +
+      '你之前说过不要发图片，建议关掉这个开关。</div>';
+  }
+
+  html += '<div class="field sep"><label>添加表情<span class="sp"></span>' +
+    '<span class="mini">推荐用「QQ 表情链接」—— 只有带表情 ID 的才会按"表情"发出去</span>' +
+    '</label>' +
+    '<div class="row"><input type="text" id="stk-url" class="fill" ' +
+      'placeholder="粘贴 QQ 表情资源地址：https://gxh.vip.qq.com/club/item/parcel/item/…/raw300.gif">' +
+    '</div>' +
+    '<div class="row sep">' +
+      '<input type="text" id="stk-tags" placeholder="标签，逗号分隔，如 无语,敷衍">' +
+      '<button class="btn sm primary" onclick="addStickerUrl(this)">用链接添加</button>' +
+      '<span class="mini">或</span>' +
+      '<input type="file" id="stk-file" accept="image/gif,image/png,image/jpeg,image/webp">' +
+      '<button class="btn sm" onclick="addStickerFile(this)">上传图片添加</button>' +
+    '</div>' +
+    '<div class="note">' +
+      '· <b>用链接添加</b>：从 QQ 表情资源地址里反解出表情 ID，发送时走 QQ 原生表情，' +
+      '对方看到的是能收藏、能转发的表情本体。<br>' +
+      '· <b>上传图片添加</b>：只能存下来看，<b>她不会用它</b>（因为发图片正是你不想要的）。' +
+      '非要发就得打开上面那个「允许以图片形式发」。' +
+    '</div></div>';
+
+  var items = d.items || [];
+  html += '<div class="lbl">已有表情（' + items.length + ' 条，其中 ' +
+    d.native_count + ' 条可原生发送）</div>';
+  html += items.length
+    ? '<div class="scroll"><div class="items" data-gallery>' + items.map(stickerRow).join('') + '</div></div>'
+    : empty('库里还没有表情包。她收到群里合适的动图会自动收；也可以在上面手动加。');
+  setBox('p-stickers', html, JSON.stringify(d));
+}
+async function toggleSticker(field, value, el){
+  try{
+    var r = await apply('sticker_toggle', {field: field, value: value});
+    toast('ok', (value ? '已打开' : '已关闭'), r.note || '');
+    await renderStickers();
+  }catch(e){
+    el.checked = !value;
+    toast('bad', '切换失败', String(e && e.message || e));
+  }
+}
+async function stkPost(op, payload, btn, okTitle){
+  if(btn) btn.disabled = true;
+  try{
+    var res = await rawFetch('/api/bot/sticker', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({op: op, payload: payload})
+    });
+    var b;
+    try{ b = await res.json(); }
+    catch(e){ throw new Error('响应不是 JSON（HTTP ' + res.status + '）'); }
+    if(!res.ok || b.ok === false) throw new Error(b.error || ('HTTP ' + res.status));
+    toast('ok', okTitle, b.note || '');
+    await renderStickers();
+    return true;
+  }catch(e){
+    toast('bad', '操作失败', String(e && e.message || e));
+    return false;
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+function addStickerUrl(btn){
+  var url = ($('stk-url').value || '').trim();
+  if(!url){ toast('bad', '请先粘贴 QQ 表情地址'); return; }
+  stkPost('add_url', {url: url, tags: ($('stk-tags').value || '')}, btn, '已添加');
+}
+function addStickerFile(btn){
+  var inp = $('stk-file');
+  var f = inp && inp.files && inp.files[0];
+  if(!f){ toast('bad', '请先选择一张图片'); return; }
+  if(f.size > 4 * 1024 * 1024){
+    toast('bad', '图片太大', (f.size / 1048576).toFixed(1) + ' MB，上限 4 MB');
+    return;
+  }
+  var fr = new FileReader();
+  fr.onload = function(){
+    var b64 = String(fr.result).split(',')[1] || '';
+    stkPost('add_upload', {data_b64: b64, filename: f.name,
+                           tags: ($('stk-tags').value || '')}, btn, '已上传');
+  };
+  fr.onerror = function(){ toast('bad', '读取文件失败'); };
+  fr.readAsDataURL(f);
+}
+async function delSticker(md5, btn){
+  var yes = await askConfirm('删除这条表情？',
+    '她之后就不会再用它了。\n（md5 ' + String(md5).slice(0, 12) + '）', '删除');
+  if(!yes) return;
+  await stkPost('delete', {md5: md5}, btn, '已删除');
+}
+
+/* ────────── B08 会话（可清空） ────────── */
+async function renderSessions(){
+  var d = await api('/api/bot/sessions');
+  var rows = d.sessions || [];
+  var html = statsBox([stat(rows.length, '会话总数'), stat(d.attention_groups, '活跃群')], 'cap');
+  if(rows.length){
+    html += '<div class="scroll"><table><thead><tr><th>会话</th><th>类型</th><th>轮数</th>' +
+      '<th>最后回复</th><th></th></tr></thead><tbody>' +
+      rows.map(function(r){
+        return '<tr><td>' + esc(r.key) + '</td><td class="sans">' + esc(r.kind) +
+          '</td><td>' + esc(r.turns) + '</td><td class="mini nowrap">' + esc(fmtAgo(r.last_reply_at)) +
+          '</td><td><button class="btn sm danger" onclick="clearSession(\'' + esc(r.key) +
+          '\', this)">清空</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }else html += empty('当前没有活跃会话（重启后上下文会清空）。');
+  setBox('p-sessions', html, JSON.stringify(d));
+}
+async function clearSession(key, btn){
+  await doWrite({op: 'session_clear', payload: {key: key}, btn, okTitle: '会话已清空',
+    confirm: {title: '清空这个会话的上下文？',
+              body: key + '\n她会忘掉这段对话，但长期记忆不受影响。', ok: '清空'},
+    after: renderSessions});
+}
+
+/* ────────── B11 权限名单（可编辑） ────────── */
+function idsToString(arr){ return (arr || []).join(', '); }
+function idChip(uid, names){
+  var nm = (names || {})[String(uid)] || '';
+  return '<span class="chip ' + (nm ? 'acc' : '') + '">' + esc(uid) +
+         (nm ? '（' + esc(nm) + '）' : '') + '</span>';
+}
+function idList(arr, names){
+  if(!(arr || []).length) return '<span class="mini">（空 = 不限制）</span>';
+  return arr.map(function(u){ return idChip(u, names); }).join('');
+}
+function parseIds(s){
+  var parts = String(s || '').split(/[,\s;，、]+/).filter(Boolean);
+  var out = [];
+  for(var i = 0; i < parts.length; i++){
+    var n = Number(parts[i]);
+    if(!Number.isInteger(n) || n <= 0) throw new Error('不是合法 QQ 号：' + parts[i]);
+    out.push(n);
+  }
+  return out;
+}
+async function renderMeta(){
+  var d = await api('/api/bot/meta');
+  window.__meta = d;
+
+  var a = d.admin || {}, b = d.ban || {}, restrict = a.restrict || {};
+  var keys = Object.keys(restrict);
+  var onCount = keys.filter(function(k){ return restrict[k]; }).length;
+
+  var html = statsBox([
+    stat((a.user_ids || []).length, '管理员'),
+    stat(onCount + ' / ' + keys.length, '受限功能', onCount ? 'acc' : 'ok'),
+    stat((b.protected_ids || []).length, '禁言豁免')
+  ]);
+
+  var labels = d.restrict_labels || {};
+  var chips = '';
+  keys.forEach(function(k){
+    var on = !!restrict[k];
+    var lab = labels[k] || {};
+    // 中文名由后端 RESTRICT_LABELS 给（和功能实现放一起，不会各改各的）；
+    // 没登记的退回原始键名，不至于显示不出来
+    var name = lab.name || k;
+    // data-feature 保留原始配置键：界面显示中文，自动化/排查时还能定位到键
+    chips += '<label class="chip ' + (on ? 'acc' : '') + '" data-feature="' + esc(k) + '" ' +
+      'title="' + esc(name + (lab.desc ? '：' + lab.desc : '') + '（配置键 ' + k + '）') + '">' +
+      '<span class="switch"><input type="checkbox"' + (on ? ' checked' : '') +
+      ' onchange="setRestrict(\'' + esc(k) + '\', this.checked, this)"><i></i></span>' +
+      esc(name) + '</label>';
+  });
+
+  var names = d.known_names || {};
+  var counts = '';
+  var cl = d.call_log || {};
+  Object.keys(cl).forEach(function(k){
+    counts += '<span class="chip">' + esc(k) + ' ' + cl[k] + '</span>';
+  });
+
+  // 左：受限功能开关组 + 禁言参数；右：两份名单（高度差不多，两边都不会空一大片）
+  html += '<div class="two-col"><div>' +
+    '<div class="field"><label>受限功能开关<span class="sp"></span>' +
+      '<span class="mini">开 = 仅管理员可用；关 = 对所有人开放</span></label>' +
+      '<div class="item-meta">' + chips + '</div>' +
+      '<div class="note">改完立即生效（她下次判断权限就用新值），并已写入 config.json。</div>' +
+    '</div>' +
+    kv([
+      ['禁言开关', b.enable ? pill('启用','ok') : pill('关闭','bad')],
+      ['禁言上限', '单次最长 ' + esc(b.max_minutes) + ' 分钟 · 每小时 ' + esc(b.max_per_hour) + ' 次'],
+      ['保护管理员', b.protect_admins ? pill('是','ok') : pill('否','warn')]
+    ]) +
+    '<div class="field sep"><label>最近 1 分钟调用用量</label>' +
+      (counts || '<span class="mini">无</span>') + '</div>' +
+    '</div><div>' +
+    '<div class="field"><label>管理员 QQ<span class="sp"></span>' +
+      '<button class="btn sm" onclick="saveAccess(this)">保存两份名单</button></label>' +
+      '<input type="text" id="ac-admin" value="' + esc(idsToString(a.user_ids)) +
+      '" placeholder="逗号分隔，留空 = 不限制">' +
+      '<div class="note">当前：' + idList(a.user_ids, names) + '</div></div>' +
+    '<div class="field"><label>禁言豁免名单<span class="sp"></span>' +
+      '<span class="mini">这些人不会被自动禁言</span></label>' +
+      '<input type="text" id="ac-protect" value="' + esc(idsToString(b.protected_ids)) +
+      '" placeholder="逗号分隔">' +
+      '<div class="note">当前：' + idList(b.protected_ids, names) + '</div></div>' +
+    '</div></div>';
+
+  setBox('p-access', html, JSON.stringify(d));
+}
+async function setRestrict(feature, value, el){
+  var lab = ((window.__meta || {}).restrict_labels || {})[feature] || {};
+  var name = lab.name || feature;
+  try{
+    var r = await apply('restrict_set', {feature: feature, value: value});
+    toast('ok', (value ? '已收紧' : '已放开') + '：' + name, r.note || '');
+    await renderMeta();
+  }catch(e){
+    el.checked = !value;
+    toast('bad', '切换失败：' + name, String(e && e.message || e));
+  }
+}
+async function saveAccess(btn){
+  var adminIds, protectedIds;
+  try{
+    adminIds = parseIds($('ac-admin').value);
+    protectedIds = parseIds($('ac-protect').value);
+  }catch(e){ toast('bad', '名单格式有误', String(e && e.message || e)); return; }
+  await doWrite({
+    op: 'access_set',
+    payload: {admin_user_ids: adminIds, protected_ids: protectedIds},
+    btn: btn,
+    okTitle: '名单已保存',
+    confirm: {title: '确认修改名单？',
+      body: '管理员：' + (adminIds.join(', ') || '（空 = 不限制）') +
+            '\n豁免禁言：' + (protectedIds.join(', ') || '（空）') +
+            '\n\n管理员会自动被 pin 进长期记忆，不会被裁剪。',
+      ok: '保存'},
+    after: async function(){ await renderMeta(); await renderStatus(); }
+  });
+}
+
+/* ────────── B02 额度限流 ────────── */
+async function renderLimits(){
+  var d = window.__meta || await api('/api/bot/meta');
+  var rl = d.rate_limit || {};
+  setBox('p-limits', kvN([
+    ['每分钟调用上限', esc(rl.max_calls_per_minute == null ? '不限' : rl.max_calls_per_minute)],
+    ['每分钟用量', Object.keys(d.call_log || {}).length
+      ? Object.keys(d.call_log).map(function(k){
+          return '<span class="chip' + (d.call_log[k] >= (rl.max_calls_per_minute || 1) ? ' neg' : '') +
+            '">' + esc(k) + ' ' + d.call_log[k] + '</span>';
+        }).join('') : '—'],
+    ['禁言计数（本小时）', Object.keys(d.ban_log || {}).length
+      ? Object.keys(d.ban_log).map(function(k){
+          return '<span class="chip">群 ' + esc(k) + ' ' + d.ban_log[k] + ' 次</span>';
+        }).join('') : '—'],
+    ['戳一戳连击', Object.keys(d.poke_streak || {}).length
+      ? Object.keys(d.poke_streak).map(function(k){
+          return '<span class="chip">' + esc(k) + '</span>';
+        }).join('') : '—'],
+    ['群发言者窗口', Object.keys(d.recent_speakers || {}).length
+      ? Object.keys(d.recent_speakers).map(function(k){
+          return '<span class="chip">群 ' + esc(k) + ' ' + d.recent_speakers[k] + ' 人</span>';
+        }).join('') : '—'],
+    ['群冷却', esc(d.group_cooldown) + ' 秒'],
+    ['上下文', '最多 ' + esc(d.max_context_turns) + ' 轮 / ' + esc(d.context_max_chars) + ' 字符']
+  ], 2), JSON.stringify([d.rate_limit, d.call_log, d.ban_log, d.poke_streak, d.recent_speakers,
+                      d.group_cooldown, d.max_context_turns, d.context_max_chars]));
+}
+
+/* ────────── B07 群聊记忆（跟群走，不跟人走） ────────── */
+async function renderGroupMemory(){
+  var d = await api('/api/bot/group-memory');
+  var gs = d.groups || {};
+  var keys = Object.keys(gs);
+  var html = statsBox([
+    stat(d.count || 0, '总条数'),
+    stat(keys.length, '记着的群'),
+    stat(d.max_notes, '每群上限')
+  ]);
+  if(!keys.length){
+    html += empty('还没有任何群聊记忆。她跟群混熟了自己会记，也可以在这儿删。');
+  }
+  if(keys.length) html += '<div class="scroll"><div class="items">';
+  keys.forEach(function(g){
+    var rec = gs[g] || {};
+    var notes = (rec.notes || []).map(function(n, i){
+      return '<span class="chip">' + esc(n.t || '') +
+        '<button title="删掉这条" onclick="delGroupNote(\'' + esc(g) + '\',' + i + ')">×</button></span>';
+    }).join('');
+    html += itemRow({
+      top: '<span class="chip acc">' + esc(rec.name || '（未知群名）') + '</span>' +
+           '<span class="mini">' + esc(g) + '</span>',
+      body: notes ? '<div class="item-meta">' + notes + '</div>' : '',
+      acts: '<button class="btn sm danger" onclick="forgetGroup(\'' + esc(g) +
+        '\', this)">整个忘掉</button>'
+    });
+  });
+  if(keys.length) html += '</div></div>';
+  var reg = d.registry || {};
+  var rg = reg.groups || [];
+  if(rg.length){
+    html += '<div class="field"><label>群名册' +
+      '<span class="sp"></span><span class="mini">跨群指令靠它把群名翻成群号，共 ' +
+      esc(rg.length) + ' 个</span></label>' +
+      '<div class="item-meta">' + rg.slice(0, 12).map(function(g){
+        return '<span class="chip">' + esc(g.name || '（没群名）') +
+          '<span class="mini"> ' + esc(g.group_id) + '</span></span>';
+      }).join('') + '</div></div>';
+  }
+  setBox('p-groupmem', html, JSON.stringify(d));
+}
+async function delGroupNote(gid, i){
+  await doWrite({op: 'group_note_delete', payload: {group: gid, index: i},
+    okTitle: '已删除该条', after: renderGroupMemory});
+}
+async function forgetGroup(gid, btn){
+  await doWrite({op: 'group_forget', payload: {group: gid}, btn,
+    okTitle: '已忘掉这个群',
+    confirm: {title: '忘掉这个群的全部记忆？',
+              body: '群号 ' + gid + '\n她之后对这个群就重新陌生了。', ok: '忘掉'},
+    after: renderGroupMemory});
+}
+async function reloadGroupMemory(){ await runOne('groupmem', renderGroupMemory, 'p-groupmem'); }
+
+/* ────────── B16 B站登录（真登录态，不是"有没有 cookie"） ────────── */
+async function renderBili(){
+  var d = await api('/api/bot/bili');
+  if(!d.enable){
+    setBox('p-bili', empty('config.bili.enable 是 false，B 站功能关着。'), JSON.stringify(d));
+    return;
+  }
+  var state = d.guest === false ? pill('已登录','ok')
+            : d.guest === true  ? pill('游客','bad')
+            : pill('未确认','warn');
+  var html = statsBox([
+    stat(d.guest === false ? '已登录' : d.guest === true ? '游客' : '未确认', '当前状态',
+         d.guest === false ? 'ok' : d.guest === true ? 'bad' : ''),
+    stat(d.uname || d.uid || '—', '账号'),
+    stat(d.actions_today + ' / ' + (d.daily_action_cap || 0), '今日动作')
+  ]);
+  html += kv([
+    ['状态说明', esc(d.state_text || '—')],
+    ['本地 cookie', d.logged_in_cookie ? '有 SESSDATA' : '<span class="mini">没有</span>'],
+    ['上次检查', d.checked_at ? esc(fmtTime(d.checked_at)) + '（' + esc(fmtAgo(d.checked_at)) + '）'
+                              : '<span class="mini">还没查过</span>'],
+    ['自动登录', d.auto_login ? pill('开','ok') : pill('关','bad')],
+    ['检查间隔', esc(d.check_minutes) + ' 分钟'],
+    ['失败原因', d.last_error ? esc(d.last_error) : '<span class="mini">—</span>'],
+    ['二维码文件', d.qr_path + (d.qr_exists ? '' : '<span class="mini">（还没有）</span>')]
+  ]);
+  if(d.guest === true){
+    html += '<div class="note">现在是游客：能刷热门，但点赞/投币/收藏都会失败。' +
+      '点右上角「检查并登录」会生成二维码并发到<b>管理员私聊</b>，用手机 B 站扫一下就好。</div>';
+  }else if(d.guest === false){
+    html += '<div class="note">只认 B 站接口回的 isLogin —— 本地有 SESSDATA 不代表没过期。' +
+      '所以这里显示「已登录」才是真能用的。</div>';
+  }else{
+    html += '<div class="note">还没查过。点「检查并登录」让她去问一次。</div>';
+  }
+  setBox('p-bili', html, JSON.stringify(d));
+}
+async function checkBiliLogin(btn){
+  await doWrite({op: 'bili_login', btn, okTitle: '已经去查了',
+    errTitle: '检查失败', after: renderBili});
+}
+async function reloadBili(){ await runOne('bili', renderBili, 'p-bili'); }
+
+/* ────────── B12 跨群（群名册 + 认人依据） ────────── */
+async function renderCrossGroup(){
+  var d = await api('/api/bot/cross-group');
+  var groups = d.groups || [], people = d.seen_people || [];
+  var html = statsBox([
+    stat(groups.length, '认得的群'),
+    stat(people.length, '见过的发言人'),
+    stat((d.default_minutes || 0) + ' 分', '默认禁言时长'),
+    stat(d.max_per_hour || 0, '每小时上限')
+  ]);
+  if(!d.enable){
+    html += '<div class="err">跨群功能关着（config.cross_group.enable = false）。</div>';
+  }
+  html += '<div class="cg-grid"><div class="field"><label>群名册' +
+    '<span class="sp"></span><span class="mini">认群就靠它：群名 &rarr; 群号</span></label>';
+  if(!groups.length){
+    html += empty('还没有群。等 NapCat 连上会自动拉一次，也可以点右上角「重拉群名册」。');
+  }else{
+    html += '<div class="scroll"><div class="items">' + groups.map(function(g){
+      return itemRow({
+        top: '<span class="chip acc">' + esc(g.name || '（没拿到群名）') + '</span>' +
+             '<span class="mini">' + esc(g.group_id) + '</span>',
+        sub: g.seen ? '最近见到：' + esc(fmtTime(g.seen)) + '（' + esc(fmtAgo(g.seen)) + '）' : ''
+      });
+    }).join('') + '</div></div>';
+  }
+  html += '</div>';
+  html += '<div class="field"><label>跨群认识的人' +
+    '<span class="sp"></span><span class="mini">同一个人在几个群里出现时，靠这个对上号</span>' +
+    '</label>';
+  if(!people.length){
+    html += empty('群里还没人说过话，没有可展示的。');
+  }else{
+    html += '<div class="scroll"><div class="items">' + people.map(function(p){
+      return itemRow({
+        top: '<span class="chip">' + esc((p.names || []).join(' / ') || p.uin) + '</span>' +
+             '<span class="mini">' + esc(p.uin) + '</span>',
+        sub: (p.groups || []).map(esc).join('、')
+      });
+    }).join('') + '</div></div>';
+  }
+  html += '</div></div>';
+  html += kvN([
+    ['管理员', (d.admins || []).map(esc).join('、') || '<span class="mini">（名单为空，谁都能用）</span>'],
+    ['豁免名单', (d.protected_ids || []).map(esc).join('、') || '<span class="mini">—</span>'],
+    ['保护管理员', d.protect_admins ? '是（禁不了管理员/群主）' : '<span class="mini">否</span>'],
+    ['单次上限', esc(d.max_minutes) + ' 分钟']
+  ], 2);
+  setBox('p-crossgroup', html, JSON.stringify(d));
+}
+async function refreshGroups(btn){
+  await doWrite({op: 'groups_refresh', btn, okTitle: '在拉了',
+    errTitle: '拉群列表失败', after: renderCrossGroup});
+}
+async function reloadCrossGroup(){ await runOne('crossgroup', renderCrossGroup, 'p-crossgroup'); }
+
+/* ────────── B17 阈值与手感调节（可拖动进度条） ────────── */
+var TUNABLE_GROUP = {
+  attention: '搭话与阈值', affinity: '好感（长期印象）', mood: '心情（此刻状态）',
+  qzone: 'QQ 空间', ban: '禁言', rate_limit: '调用频率',
+  life: '生活作息', self_activity: '她自己在做什么', reply: '回复节奏',
+  split: '分条发送', quote: '引用回复', memory: '记忆', web: '联网搜索',
+  weather: '天气', stickers: '表情包', bili: 'B站', cross_group: '跨群', activity: '行为报告',
+  poke: '戳一戳', vision: '识图'
+};
+/* 顶层那几个没点号的"回复手感"键（active_reply_probability …）在后端是按路径前缀取分组名的，
+   取出来就是键名本身，面板上会直接显示成英文。它们本来就属于「回复节奏」那一组，
+   这里折回去，分组标题就不会漏出英文键名。
+   **这张表两边都留着，别删**：新后端（bot.py 的 _tunable_group）已经把这 5 个键归到 reply，
+   新后端下它是空转 —— tunableGroup('reply') 命中 TUNABLE_GROUP 就直接返回，不会被折第二次、
+   也不会显示成别的名字；但换了后端、进程还跑着旧代码时（这台机器上就可能是），只有它顶着，
+   否则面板上会冒出 5 个英文分组标题。 */
+var TUNABLE_GROUP_AS_REPLY = {
+  active_reply_probability: 1, max_reply_chars: 1, max_context_turns: 1,
+  group_cooldown_seconds: 1, context: 1
+};
+function tunableGroup(g){
+  if(TUNABLE_GROUP[g]) return g;
+  return TUNABLE_GROUP_AS_REPLY[g] ? 'reply' : g;
+}
+function tunableRow(it){
+  var id = 'tune-' + it.path.replace(/\./g, '-');
+  var unit = it.unit || '';
+  return '<div class="tune">' +
+    '<div class="tune-top"><span class="tune-desc">' + esc(it.desc) + '</span>' +
+      '<span class="tune-val" id="' + id + '-v">' + esc(it.value) + esc(unit) + '</span></div>' +
+    '<input type="range" id="' + id + '" min="' + it.min + '" max="' + it.max +
+      '" step="' + it.step + '" value="' + esc(it.value) + '" data-unit="' + esc(unit) + '" ' +
+      'aria-label="' + esc(it.desc) + '" ' +
+      'oninput="onTuneInput(\'' + id + '-v\', this)" ' +
+      'onchange="saveTune(\'' + esc(it.path) + '\', this)">' +
+    '<div class="tune-foot"><span>' + esc(it.min) + esc(unit) + '</span>' +
+      '<span>' + esc(it.max) + esc(unit) + '</span></div>' +
+    '</div>';
+}
+async function renderTunables(){
+  var d = await api('/api/bot/tunables');
+  var items = d.items || [];
+  if(!items.length){ setBox('p-tunables', empty('没有可调项。'), JSON.stringify(d)); return; }
+  var byGroup = {};
+  items.forEach(function(it){
+    var g = tunableGroup(it.group);
+    (byGroup[g] = byGroup[g] || []).push(it);
+  });
+  var html = '';
+  Object.keys(byGroup).forEach(function(g){
+    html += '<div class="field"><label>' + esc(TUNABLE_GROUP[g] || g) +
+      '<span class="sp"></span><span class="mini">' + byGroup[g].length + ' 项</span></label>' +
+      '<div class="tune-grid">' + byGroup[g].map(tunableRow).join('') + '</div></div>';
+  });
+  setBox('p-tunables', html, JSON.stringify(d));
+}
+function onTuneInput(spanId, el){
+  var s = $(spanId);
+  if(s) s.textContent = el.value + (el.dataset.unit || '');
+}
+async function saveTune(path, el){
+  try{
+    var r = await apply('config_set', {path: path, value: parseFloat(el.value)});
+    var s = $(el.id + '-v');
+    if(s) s.textContent = r.value + (el.dataset.unit || '');
+    toast('ok', '已保存', r.note || '');
+  }catch(e){
+    toast('bad', '保存失败', String(e && e.message || e));
+    delete RENDERED['p-tunables'];    // 回滚显示，别让滑块和真实值脱节
+    await renderTunables();
+  }
+}
+async function reloadTunables(){ await runOne('tunables', renderTunables, 'p-tunables'); }
+
+/* ────────── B15 识图（后端切换 + 可用性 + 本地探测） ────────── */
+var VISION_BACKENDS = [
+  ['auto',  '自动：云端优先，失败退本地'],
+  ['cloud', '只走云端'],
+  ['local', '只走本地'],
+  ['off',   '不看图（完全不解析图片）']
+];
+var VISION_SEEN = '';   // 上次渲染到的后端，切换失败时用来把下拉回滚回去
+/* probe 正常情况下是 LM Studio /api/v0/models 里那条记录；探不到就是空对象。
+   探到时也可能裹在 {data:[...]} 里，两种都认。 */
+function visionProbe(pr){
+  if(!pr) return {};
+  if(pr.data && pr.data.length) return pr.data[0] || {};
+  return pr;
+}
+async function renderVision(){
+  var d = await api('/api/bot/vision');
+  if(d && d.ok === false){
+    setBox('p-vision', errBox(d.error || '识图状态取不到'), JSON.stringify(d));
+    return;
+  }
+  var c = d.cloud || {}, lo = d.local || {}, st = d.stats || {}, cf = d.config || {};
+  VISION_SEEN = d.backend || '';
+
+  /* 两个"看过图"的计数要分开看，别混成一个：
+       · passed_through：原图直传给回答的模型（auto/cloud 且端点自己收图时的正路）
+       · described：先让识图引擎转述成文字，再把文字交给回答的模型（vision.backend=local、
+         或回答的端点收不了图时才走）—— 它是「转述」那条路的计数，不是"总共看了几张图"。
+     新后端才有 passed_through；旧后端进程没这个字段，缺了就给「—」，别整块炸掉。 */
+  var html = statsBox([
+    stat(st.passed_through == null ? '—' : st.passed_through, '原图直传', st.passed_through > 0 ? 'acc' : ''),
+    stat(st.described == null ? '—' : st.described, '转述识图'),
+    stat(st.failed == null ? '—' : st.failed, '失败', st.failed ? 'bad' : ''),
+    stat(st.dropped == null ? '—' : st.dropped, '丢图', st.dropped ? 'bad' : 'ok'),
+    stat(st.frames == null ? '—' : st.frames, '抽帧')
+  ]);
+  html += '<div class="note">图片有两条路能进模型：<b>原图直传</b>是端点自己收图，把原图交过去' +
+    '（auto/cloud 且云端能收图时走这条，最准，也最常用）；<b>转述识图</b>是先用识图引擎把画面' +
+    '说成一段文字、再把文字交给回答的模型（<kbd>vision.backend=local</kbd>，或回答的端点收不了图时' +
+    '才走）。两格各算各的 —— 原图直传有数、转述识图一直是 0，说明图正是被直接看掉的，不是没识图。' +
+    '</div>';
+
+  html += '<div class="field"><label for="vs-backend">识图后端<span class="sp"></span>' +
+    (d.usable ? pill('现在看得到图', 'ok') : pill('现在看不到图', 'bad')) + '</label>' +
+    '<div class="row"><select id="vs-backend" onchange="setVisionBackend(this)" ' +
+      'aria-label="识图后端">' +
+      VISION_BACKENDS.map(function(o){
+        return '<option value="' + o[0] + '"' + (d.backend === o[0] ? ' selected' : '') + '>' +
+          esc(o[1]) + '</option>';
+      }).join('') + '</select>' +
+    '<span class="mini">当前：' + esc(d.backend_label || d.backend || '—') + '</span></div>' +
+    '<div class="note">' + (d.usable
+      ? '她拿图片给模型看时走的就是这条路。'
+      : '这条路现在一个后端都不通 —— 她看不到图里的内容，会直说看不到，不会瞎猜。') +
+    '</div></div>';
+
+  var pr = visionProbe(lo.probe);
+  var prId = pr.id || '';
+  var prHas = !!(prId || pr.state || pr.loaded_context_length);
+  var cloudOk = !!(c.enable && c.vision && c.has_key);
+  var localOk = !!(lo.enable && lo.vision);
+
+  var cloud = '<div class="field"><label>云端<span class="sp"></span>' +
+      (cloudOk ? pill('可用', 'ok') : pill('不可用', 'warn')) + '</label>' +
+    kv([
+      ['启用', c.enable ? pill('开', 'ok') : pill('关', 'bad')],
+      ['支持视觉', c.vision ? pill('支持', 'ok') : pill('不支持', 'bad')],
+      ['api_key', c.has_key ? pill('已配置', 'ok') : pill('没配', 'bad')]
+    ]) + '</div>';
+  var local = '<div class="field"><label>本地 LM Studio<span class="sp"></span>' +
+      (localOk ? pill('可用', 'ok') : pill('不可用', 'warn')) + '</label>' +
+    kv([
+      ['启用', lo.enable ? pill('开', 'ok') : pill('关', 'bad')],
+      ['支持视觉', lo.vision ? pill('支持', 'ok') : pill('不支持', 'bad')],
+      ['探到的模型', prHas ? esc(prId || '（没给模型名）') : '<span class="mini">没探到</span>'],
+      ['状态', prHas ? esc(pr.state || '—') : '<span class="mini">—</span>'],
+      ['上下文', pr.loaded_context_length == null
+        ? '<span class="mini">—</span>' : esc(pr.loaded_context_length) + ' token']
+    ]) +
+    (prHas ? '' : '<div class="note warn">探不到本地模型（本地没开、或 ' +
+      '<kbd>/api/v0/models</kbd> 不通）。这时候退到本地就必然失败。</div>') +
+    '</div>';
+
+  var right = '<div class="field"><label>识图参数' +
+      '<span class="sp"></span><span class="mini">只读 · 要改去 B17 拖进度条</span></label>' +
+    kv([
+      ['动图抽帧', esc(cf.max_frames == null ? '—' : cf.max_frames) + ' 帧 / 张'],
+      ['云端边长', esc(cf.max_side_cloud == null ? '—' : cf.max_side_cloud) + ' px'],
+      ['本地边长', esc(cf.max_side_local == null ? '—' : cf.max_side_local) + ' px'],
+      ['单图字节上限', cf.max_bytes == null ? '—' : esc(fmtBytes(cf.max_bytes))],
+      ['描述输出上限', esc(cf.describe_max_tokens == null ? '—' : cf.describe_max_tokens) + ' token']
+    ]) + '</div>';
+
+  setBox('p-vision', html + '<div class="vs-grid"><div>' + cloud + '</div><div>' + local +
+    '</div><div>' + right + '</div></div>', JSON.stringify(d));
+}
+async function setVisionBackend(el){
+  el.disabled = true;
+  try{
+    var r = await apply('vision_set', {backend: el.value});
+    toast('ok', '识图后端已切换', r.note || '');
+    if(el.blur) el.blur();       // 焦点还在下拉里的话，下面这次重绘会被跳过
+    delete RENDERED['p-vision'];
+    await renderVision();
+  }catch(e){
+    toast('bad', '切换识图后端失败', String(e && e.message || e));
+    el.value = VISION_SEEN || 'auto';   // 回滚下拉，别让界面和 config 脱节
+  }finally{
+    el.disabled = false;
+  }
+}
+async function reloadVision(){ await runOne('vision', renderVision, 'p-vision'); }
+
+/* ────────── B18 功能开关（按分组，直接写 config.json 的布尔项） ────────── */
+/* 分组名后端给的是配置键（qzone / ban / memory …），中文名在 TUNABLE_GROUP 这张表里 */
+function groupLabel(g){ return TUNABLE_GROUP[g] || g; }
+function swChip(it){
+  var on = !!it.value;
+  return '<label class="chip ' + (on ? 'acc' : '') + '" data-path="' + esc(it.path) + '" ' +
+    'title="' + esc((it.desc || it.label || '') + '（配置键 ' + it.path + '）') + '">' +
+    '<span class="switch"><input type="checkbox"' + (on ? ' checked' : '') +
+    ' onchange="setSwitch(\'' + esc(it.path) + '\', this.checked, this)"><i></i></span>' +
+    esc(it.label || it.path) + '</label>';
+}
+async function renderSwitches(){
+  var d = await api('/api/bot/switches');
+  if(d && d.ok === false){
+    setBox('p-switches', errBox(d.error || '开关清单取不到'), JSON.stringify(d));
+    return;
+  }
+  var groups = d.groups || [];
+  var total = 0, onCount = 0;
+  groups.forEach(function(g){
+    (g.items || []).forEach(function(it){ total++; if(it.value) onCount++; });
+  });
+  var html = statsBox([
+    stat(total, '开关总数'),
+    stat(onCount, '开着', 'acc'),
+    stat(total - onCount, '关着', total - onCount ? 'warn' : 'ok')
+  ]);
+  if(!groups.length) html += empty('后端还没登记任何开关。');
+  groups.forEach(function(g){
+    var items = g.items || [];
+    if(!items.length) return;
+    var gOn = items.filter(function(it){ return it.value; }).length;
+    html += '<div class="field"><label>' + esc(groupLabel(g.name)) +
+      '<span class="sp"></span><span class="mini">' + items.length + ' 项 · 开 ' + gOn + '</span>' +
+      '</label><div class="item-meta">' + items.map(swChip).join('') + '</div></div>';
+  });
+  setBox('p-switches', html, JSON.stringify(d));
+}
+async function setSwitch(path, value, el){
+  try{
+    var r = await apply('switch_set', {path: path, value: value});
+    toast('ok', (value ? '已打开' : '已关闭') + '：' + path, r.note || '');
+    await renderSwitches();
+  }catch(e){
+    el.checked = !value;
+    toast('bad', '切换失败：' + path, String(e && e.message || e));
+  }
+}
+async function reloadSwitches(){ await runOne('switches', renderSwitches, 'p-switches'); }
+
+/* ────────── B10 话术与列表（一行一条的多行文本） ────────── */
+var LIST_LIMITS = {};   // path -> {label, max_items, max_chars}，输入时做长度提示用
+function listId(path){ return 'ls-' + String(path).replace(/[^A-Za-z0-9]/g, '-'); }
+/* 空行丢掉、首尾空格去掉：一行就是一条，粘带空行的文本不该被算成好几条 */
+function listLines(text){
+  return String(text == null ? '' : text).split('\n').map(function(s){
+    return s.trim();
+  }).filter(function(s){ return s.length > 0; });
+}
+function listDirty(path){
+  var el = $(listId(path)), cnt = $(listId(path) + '-cnt'), btn = $(listId(path) + '-save');
+  if(!el) return;
+  var lim = LIST_LIMITS[path] || {};
+  var lines = listLines(el.value);
+  var over = 0;
+  if(lim.max_chars) lines.forEach(function(l){ if(l.length > lim.max_chars) over++; });
+  var tooMany = !!(lim.max_items && lines.length > lim.max_items);
+  var bad = tooMany || over > 0;
+  if(cnt){
+    cnt.textContent = lines.length + ' 条' + (lim.max_items ? ' / ' + lim.max_items : '') +
+      (over ? '　·　' + over + ' 条超长' : '') +
+      (tooMany ? '　·　条数超上限' : '');
+    cnt.style.color = bad ? 'var(--bad)' : '';
+  }
+  if(btn) btn.disabled = bad;
+}
+async function saveList(path, btn){
+  var el = $(listId(path));
+  if(!el) return;
+  var lines = listLines(el.value);
+  var lim = LIST_LIMITS[path] || {};
+  if(lim.max_items && lines.length > lim.max_items){
+    toast('bad', '条目太多', '「' + (lim.label || path) + '」最多 ' + lim.max_items +
+      ' 条，现在 ' + lines.length + ' 条（空行不算）。');
+    return;
+  }
+  var over = lim.max_chars
+    ? lines.filter(function(l){ return l.length > lim.max_chars; }) : [];
+  if(over.length){
+    toast('bad', '有单条太长', over.length + ' 条超过 ' + lim.max_chars + ' 字，最长的那条 ' +
+      Math.max.apply(null, over.map(function(l){ return l.length; })) + ' 字。');
+    return;
+  }
+  await doWrite({
+    op: 'list_set', payload: {path: path, lines: lines}, btn: btn,
+    okTitle: '已保存：' + (lim.label || path),
+    after: renderLists
+  });
+}
+async function renderLists(){
+  var d = await api('/api/bot/lists');
+  if(d && d.ok === false){
+    setBox('p-lists', errBox(d.error || '列表取不到'), JSON.stringify(d));
+    return;
+  }
+  var groups = d.groups || [];
+  LIST_LIMITS = {};
+  var total = 0, overCount = 0;
+  groups.forEach(function(g){
+    (g.items || []).forEach(function(it){
+      total++;
+      LIST_LIMITS[it.path] = {label: it.label || it.path, max_items: it.max_items || 0,
+                              max_chars: it.max_chars || 0};
+      if(it.max_items && (it.count || 0) > it.max_items) overCount++;
+    });
+  });
+  var html = statsBox([
+    stat(total, '可编辑列表'),
+    stat(groups.length, '分组'),
+    stat(overCount, '已超上限', overCount ? 'bad' : 'ok')
+  ]);
+  if(!groups.length) html += empty('后端还没登记任何列表项。');
+  var listHtml = '';
+  groups.forEach(function(g){
+    var items = g.items || [];
+    if(!items.length) return;
+    listHtml += '<div class="field lbl-row"><label>' + esc(groupLabel(g.name)) +
+      '<span class="sp"></span><span class="mini">' + items.length + ' 项</span></label></div>';
+    items.forEach(function(it){
+      var id = listId(it.path), lim = LIST_LIMITS[it.path] || {};
+      var lines = it.lines || [];
+      // 窄屏（两列 / 单列断点）下文本框压矮一档：宽转高的换算会让这张卡比同行邻居高出一截，
+      // 那是看得见的空白；rows 只是初始行数，内容多了照样能拉长
+      var rows = Math.max(2, Math.min(window.innerWidth < 1181 ? 4 : 8,
+                                      lim.max_items || 4));
+      listHtml += '<div class="field sep"><label for="' + id + '">' + esc(it.label || it.path) +
+          '<span class="sp"></span>' +
+          '<span class="cnt" id="' + id + '-cnt">' + esc(it.count == null ? lines.length : it.count) +
+            ' 条 / ' + esc(lim.max_items) + '</span>' +
+          '<button class="btn sm" id="' + id + '-save" ' +
+            'onclick="saveList(\'' + esc(it.path) + '\', this)">保存</button></label>' +
+        '<div class="mini">' + esc(it.desc || '一行一条') +
+          '　上限 ' + esc(lim.max_items) + ' 条 · 单条 ' + esc(lim.max_chars) + ' 字' +
+          '　配置键 ' + esc(it.path) + '</div>' +
+        '<textarea id="' + id + '" rows="' + rows + '" spellcheck="false" ' +
+          'placeholder="' + esc(it.desc || '一行一条') + '" ' +
+          'oninput="listDirty(\'' + esc(it.path) + '\')">' + esc(lines.join('\n')) + '</textarea></div>';
+    });
+  });
+  html += '<div class="list-grid">' + listHtml + '</div>';
+  setBox('p-lists', html, JSON.stringify(d));
+}
+async function reloadLists(){ await runOne('lists', renderLists, 'p-lists'); }
+
+/* ────────── B20 日志 ────────── */
+var LV_RE = /\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]/;
+var TS_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]?\d*)\s?/;
+var LOG_DATA = null, LOG_KEY = '', LOG_HEAD = '';
+function highlightLog(ln){
+  var m = ln.match(LV_RE);
+  var cls = m ? 'lv-' + m[1] : '';
+  var ts = ln.match(TS_RE);
+  if(ts){
+    return '<tr><td class="t">' + esc(ts[1]) + '</td><td class="' + cls + '">' +
+      esc(ln.slice(ts[0].length)) + '</td></tr>';
+  }
+  // NapCat / 空间桥接的日志行首不一定是时间戳，原样铺开
+  return '<tr><td class="t"></td><td class="' + cls + '">' + esc(ln) + '</td></tr>';
+}
+/* 客户端过滤：搜索框与「只看错误」都不再重新请求，只在已拿到的行里筛 */
+function filterLogs(){
+  var s = $('log-search'), e = $('log-errors');
+  var q = s ? (s.value || '').trim().toLowerCase() : '';
+  var errOnly = e ? e.checked : false;
+  var rows = (LOG_DATA && LOG_DATA.lines) || [];
+  var seen = rows.filter(function(ln){
+    if(errOnly && !/\[(ERROR|CRITICAL)\]/.test(ln)) return false;
+    if(q && ln.toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  });
+  var body;
+  if(!rows.length) body = empty((LOG_DATA && LOG_DATA.note) || '没有匹配的日志行。');
+  else if(!seen.length) body = empty('没有匹配的日志行。');
+  else body = '<table><tbody>' + seen.map(highlightLog).join('') + '</tbody></table>';
+  setBox('p-logs', LOG_HEAD + body, LOG_KEY + '|' + q + '|' + errOnly);
+}
+async function renderLogs(){
+  var source = $('log-source').value || 'bot';
+  var level = $('log-level').value;
+  var lines = $('log-lines').value;
+  var d = await api('/api/bot/logs?source=' + encodeURIComponent(source) +
+                    '&lines=' + encodeURIComponent(lines) +
+                    (level ? '&level=' + encodeURIComponent(level) : ''));
+  LOG_DATA = d;
+  LOG_KEY = JSON.stringify(d);
+  LOG_HEAD = d.file
+    ? '<div class="note">' + esc(d.file) + (d.note ? '　（' + esc(d.note) + '）' : '') + '</div>'
+    : '';
+  filterLogs();
+}
+
+/* ────────── B19 配置 ────────── */
+async function renderConfig(){
+  var d = await api('/api/bot/config');
+  var masked = d.redacted_paths || [];
+  setBox('p-config',
+    '<div class="item-meta">' +
+      (masked.length
+        ? masked.map(function(p){ return '<span class="chip neg">' + esc(p) + ' 已打码</span>'; }).join('')
+        : '<span class="chip">无敏感字段</span>') +
+      '<span class="sp"></span><span class="mini">打码字段不可经控制台修改</span></div>' +
+    '<div class="sep"><pre>' + esc(JSON.stringify(d.config, null, 2)) + '</pre></div>',
+    JSON.stringify(d));
+}
+
+/* ────────── Q03 空间功能与额度 ────────── */
+async function renderQzoneFeatures(){
+  const d = await api('/api/bot/qzone-actions');
+  const p = d.post || {}, c = d.comment || {}, l = d.like || {}, b = d.bridge || {};
+  const today = d.actions_today || {};
+  const feeds = d.feeds || [];
+
+  let html = statsBox([
+    stat(today.like || 0, '今日点赞', (today.like ? 'ok' : '')),
+    stat(today.comment || 0, '今日评论', (today.comment ? 'ok' : '')),
+    stat((today.post || 0) + ' / ' + (p.max_per_day == null ? '—' : p.max_per_day), '今日发说说'),
+    stat(feeds.length, '好友动态缓存')
+  ]);
+
+  // 三个动作一行的对照表：开关 / 用量 / 限制，一眼看清
+  html += '<div class="scroll-x"><table><thead><tr><th>动作</th><th>开关</th><th>今日用量 / 上限</th>' +
+    '<th>其它限制</th></tr></thead><tbody>' +
+    '<tr><td class="sans">发说说</td><td>' +
+      (p.enable ? pill('开','ok') : pill('关','bad')) + '</td><td>' +
+      quota(p.used_today || 0, p.max_per_day || 0) + '</td><td>' +
+      '单条 ≤ ' + esc(p.max_chars) + ' 字<br>' +
+      '自发概率 ' + ((p.auto_probability || 0) * 100).toFixed(0) + '%' +
+      (p.count_manual ? '<br>手动发也占额度' : '<br>手动发不占额度') + '</td></tr>' +
+    '<tr><td class="sans">评论</td><td>' +
+      (c.enable ? pill('开','ok') : pill('关','bad')) + '</td><td>' +
+      quota(c.used_today || 0, c.max_per_day || 0) + '</td><td>' +
+      '单条 ≤ ' + esc(c.max_chars) + ' 字<br>' +
+      (c.once_per_post
+        ? '同一条说说只评一次<br><span class="mini">已记 ' +
+          esc(c.remembered_posts || 0) + ' 条（留 ' +
+          esc(c.remember_days || 0) + ' 天 / 最多 ' + esc(c.remember_keep || 0) + ' 条）</span>'
+        : '<span class="mini">同一条可以说多次（已关去重）</span>') + '</td></tr>' +
+    '<tr><td class="sans">点赞</td><td>' +
+      (l.enable ? pill('开','ok') : pill('关','bad')) + '</td><td>' +
+      (l.seconds_since_last == null
+        ? '<span class="mini">今天还没点过</span>'
+        : esc(fmtDur(l.seconds_since_last)) + ' 前') + '</td><td>' +
+      '冷却 ' + esc(l.cooldown_seconds) + ' 秒</td></tr>' +
+    '</tbody></table></div>';
+
+  html += '<div class="note">' +
+    '<b>点赞和评论是两个独立动作</b>：她同一轮里可以只点赞、只评论，' +
+    '或者两个都做（两个标记都会执行）。不会出现「点过赞就不评论了」。<br>' +
+    (c.once_per_post
+      ? '<b>同一条说说只评论一次</b>：评过的 tid 记在 <kbd>' +
+        esc(c.state_path || 'qzone_comment_state.json') + '</kbd>，重启也作废不了。' +
+        '所以「某人最新那条」即使一直挂在动态列表最上面，她也不会反复去评。'
+      : '') +
+    '<br>另外，除了被要求，她也会<b>自己</b>去空间互动 —— 见下面「自主互动」。</div>';
+
+  if(c.once_per_post && (c.recent_commented || []).length){
+    html += '<div class="field"><label>最近评过的说说' +
+      '<span class="sp"></span><span class="mini">这些不会再评第二次</span></label>' +
+      '<div class="scroll-x"><table><thead><tr><th>谁</th><th>tid</th><th>时间</th></tr></thead><tbody>' +
+      c.recent_commented.map(function(r){
+        return '<tr><td class="sans">' + esc(r.name || r.uin || '—') + '</td>' +
+          '<td class="mini">' + esc((r.tid || '').slice(0, 18)) + '</td>' +
+          '<td class="mini nowrap">' + esc(fmtTime(r.ts)) + '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+  }
+
+  // 自主互动 + 跨群好感：这两块一起决定"她愿不愿意去互动、会跟谁互动"
+  const ai = d.auto_interact || {};
+  const mood = d.mood || {};
+  html += '<div class="field"><label>自主互动' +
+    '<span class="sp"></span><span class="mini">不用谁要求，她闲着时自己去空间互动</span>' +
+    '</label>' + kvN([
+      ['开关', ai.enable ? pill('开','ok') : pill('关','bad')],
+      ['触发概率', '每次检查 ' + ((ai.probability || 0) * 100).toFixed(0) + '%'],
+      ['冷却', esc(ai.cooldown_minutes) + ' 分钟'],
+      ['上次自主互动', ai.seconds_since_last == null
+        ? '<span class="mini">今天还没主动过</span>'
+        : esc(fmtDur(ai.seconds_since_last)) + ' 前'],
+    ], 3) + '<div class="note">' +
+      '她会看心情决定：心情好、对这人印象好 → 更可能去点赞甚至评论；' +
+      '心情差就多半只点个赞或干脆不理。<b>印象 ≤ -3（很看不顺眼）的人会被直接跳过</b>，' +
+      '评论内容也会带上当时的情绪。</div></div>';
+
+  const people = mood.people || [];
+  html += '<div class="field"><label>她对每个人的印象' +
+    '<span class="sp"></span><span class="mini">跨群合并（空间不分群）· 好感 / 心情 百分制</span>' +
+    '</label>';
+  html += people.length
+    ? '<div class="item-meta">' + people.map(function(m){
+        const neg = m.affinity < 50;
+        return '<span class="chip ' + (neg ? 'neg' : 'pos') + '" title="' +
+          esc('好感 ' + Math.round(m.affinity) + '/100，心情 ' + Math.round(m.mood) + '/100') + '">' +
+          esc(m.name) + ' ' + esc(m.tag) + ' ' + Math.round(m.affinity) +
+          '·心情' + Math.round(m.mood) +
+          (m.affinity <= 20 ? '（不会互动）' : '') + '</span>';
+      }).join('') + '</div>'
+    : '<div class="note">还没有任何好感记录（她跟群里人处久了才会攒出来）。</div>';
+  html += '</div>';
+
+  html += '<div class="field sep"><label>桥接连接</label>' +
+    kvN([
+      ['地址', esc(b.base || '—')],
+      ['已启用', b.enable ? pill('是','ok') : pill('否','bad')],
+      ['访问令牌', b.has_token ? pill('有','ok') : pill('无','warn')],
+      ['动态缓存', esc(b.feed_cache_size || 0) + ' 条' +
+        (b.feed_cache_age == null ? '' : '　（' + esc(fmtAgo(Date.now() / 1000 - b.feed_cache_age)) + '更新）')],
+    ], 3) + '</div>';
+
+  if(feeds.length){
+    html += '<div class="lbl">最近看到的好友动态（' + feeds.length + ' 条，' +
+      '她点赞/评论时用来找目标的就是这份）</div>' +
+      '<div class="scroll"><table><tbody>' + feeds.map(function(f){
+        return '<tr><td class="mini">' + esc(f.nickname || f.uin) + '</td>' +
+          '<td class="sans">' + esc(f.content || '（无文字）') + '</td>' +
+          '<td class="mini nowrap">' + esc(f.created_time ? fmtAgo(f.created_time) : '—') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }else{
+    html += '<div class="note">好友动态缓存是空的 —— 桥接在跑的话，等她看一眼空间就会填上。</div>';
+  }
+  setBox('q-features', html, JSON.stringify(d));
+}
+
+/* ────────── Q04 她今天在空间做了什么 ────────── */
+async function renderQzoneActions(){
+  const d = await api('/api/bot/qzone-actions');
+  const rows = (d.recent || []).slice().reverse();
+  if(!rows.length){
+    setBox('q-actions', empty('今天她还没在空间里做过什么（没点赞、没评论、没发说说）。'),
+      JSON.stringify(d.recent));
+    return;
+  }
+  const cls = {'点赞':'ok', '评论':'acc', '说说':'warn', '画图':'acc'};
+  setBox('q-actions', '<div class="scroll scroll-x"><table><tbody>' + rows.map(function(r){
+    return '<tr><td class="mini nowrap">' + esc(r.hhmm) + '</td>' +
+      '<td>' + pill(r.kind, cls[r.kind] || '') + '</td>' +
+      '<td class="sans">' + esc(r.text) + '</td></tr>';
+  }).join('') + '</tbody></table></div>', JSON.stringify(d.recent));
+}
+
+/* ────────── 空间 ────────── */
+function problemBox(msg, steps){
+  return '<div class="err">' + msg + '</div>' + stepsBox(steps);
+}
+function qzoneProblem(id, d){
+  if(d.offline){
+    setBox(id, problemBox('空间桥接离线：' + esc(d.error || '连接失败'),
+      ['启动同级的 qzone-bridge（双击它的 start.bat）后自动恢复。']));
+    return true;
+  }
+  if(d.stale){
+    setBox(id, problemBox(esc(d.error),
+      ['重启命令：双击 <kbd>qzone-bridge\\start.bat</kbd>（与本项目同级），或用 <kbd>start-all.bat</kbd> 一并拉起。']));
+    return true;
+  }
+  if(d.auth_error){ setBox(id, problemBox(esc(d.error), [])); return true; }
+  return false;
+}
+
+async function renderQzoneStatus(){
+  var d = await api('/api/qzone/status');
+  if(qzoneProblem('q-status', d)) return;
+  var b = d.bridge || {}, c = b.cookie || {}, r = b.refresh || {};
+  var html = statsBox([
+    stat(b.ok ? '已登录' : '未登录', '状态', b.ok ? 'ok' : 'bad'),
+    stat(c.valid ? '完整' : '缺失', 'Cookie', c.valid ? 'ok' : 'bad'),
+    stat(c.age_human || '—', 'Cookie 年龄'),
+    stat(b.qq || '—', '账号')
+  ]);
+  html += kv([
+    ['p_skey / skey', (c.p_skey ? pill('有','ok') : pill('无','bad')) + ' ' +
+                      (c.skey ? pill('有','ok') : pill('无','bad'))],
+    ['上次续期', esc(r.last_refresh_human || '—')],
+    ['下次续期', esc(r.next_refresh_in || '—')],
+    ['桥接进程运行', esc(fmtDur(b.uptime_seconds))]
+  ]);
+  setBox('q-status', html, JSON.stringify(d));
+}
+
+async function renderQzonePollers(){
+  var d = await api('/api/qzone/pollers');
+  if(qzoneProblem('q-pollers', d)) return;
+  if(!d.pollers){ setBox('q-pollers', empty('桥接未返回轮询状态。'), JSON.stringify(d)); return; }
+  var p = d.pollers, pl = p.pollers || {};
+  var html = statsBox([
+    stat(p.running ? '运行中' : '已停止', '状态', p.running ? 'ok' : 'bad'),
+    stat(p.trackTids, '跟踪中的说说'),
+    stat(p.seenPosts, '已见说说'),
+    stat(fmtDur((p.uptimeMs || 0) / 1000), '运行时长')
+  ]);
+  var names = {main: '说说', comments: '评论', likes: '点赞', friendFeeds: '好友动态'};
+  html += '<div class="scroll-x"><table><thead><tr><th>轮询</th><th>次数</th><th>失败</th>' +
+    '<th>上次执行</th><th>状态</th></tr></thead><tbody>' +
+    Object.keys(pl).map(function(k){
+      return '<tr><td class="sans">' + esc(names[k] || k) + '</td><td>' +
+        esc(pl[k].runCount) + '</td><td>' + (pl[k].failCount
+          ? '<span class="chip neg">' + esc(pl[k].failCount) + '</span>' : '0') +
+        '</td><td class="mini nowrap">' + esc(fmtAgo((pl[k].lastRunAt || 0) / 1000)) + '</td><td>' +
+        (pl[k].ok ? pill('正常','ok') : pill('异常','warn')) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  html += '<div class="note">最近心跳 ' + esc(fmtAgo((p.lastHeartbeatAt || 0) / 1000)) +
+    ' · 最近错误 ' + esc(p.lastError ? fmtAgo(p.lastError / 1000) : '无') + '</div>';
+  setBox('q-pollers', html, JSON.stringify(d));
+}
+
+async function renderQzonePosts(){
+  var d = await api('/api/qzone/posts?limit=50');
+  if(qzoneProblem('q-posts', d)) return;
+  var posts = d.posts || [];
+  if(!posts.length){
+    setBox('q-posts', empty('本次启动后还没轮询到说说。'), JSON.stringify(d));
+    return;
+  }
+  setBox('q-posts', '<table><thead><tr><th>时间</th><th>作者</th><th>内容</th><th>评/图</th>' +
+    '</tr></thead><tbody>' +
+    posts.slice().reverse().map(function(p){
+      return '<tr><td class="mini nowrap">' +
+        esc(p.createdTime ? fmtTime(p.createdTime) : '—') + '</td><td>' +
+        esc(p.nickname || p.uin || '') + '</td><td class="sans">' +
+        esc(String(p.content || '').slice(0, 110)) + '</td><td>' +
+        esc(p.cmtnum || 0) + ' / ' + esc(p.picsCount || 0) + '</td></tr>';
+    }).join('') + '</tbody></table>', JSON.stringify(d));
+}
+
+function evSummary(ev){
+  if(ev.post_type === 'message') return '新说说';
+  if(ev.post_type === 'notice') return '通知 · ' + (ev.notice_type || '');
+  if(ev.post_type === 'meta_event') return 'meta · ' + (ev.meta_event_type || '');
+  return ev.post_type || '(未知)';
+}
+function evDetail(ev){
+  var b = [];
+  if(ev._tid) b.push('tid=' + String(ev._tid).slice(0, 16));
+  if(ev._author_uin) b.push('uin=' + ev._author_uin);
+  if(ev.post_tid) b.push('post=' + String(ev.post_tid).slice(0, 16));
+  if(ev.comment_id) b.push('cmt=' + ev.comment_id);
+  if(ev.user_id) b.push('user=' + ev.user_id);
+  if(ev.notice_type) b.push(ev.notice_type);
+  return b.join('  ') || JSON.stringify(ev).slice(0, 150);
+}
+async function renderQzoneEvents(){
+  var d = await api('/api/qzone/events?limit=100');
+  if(qzoneProblem('q-events', d)) return;
+  var evs = d.events || [];
+  if(!evs.length){
+    setBox('q-events', empty('本次启动后还没有下发过事件。'), JSON.stringify(d));
+    return;
+  }
+  setBox('q-events', '<table><tbody>' + evs.slice().reverse().map(function(ev){
+    return '<tr><td>' + pill(ev.post_type || '?', 'acc') +
+      '</td><td class="sans">' + esc(evSummary(ev)) +
+      '</td><td class="mini">' + esc(evDetail(ev)) + '</td></tr>';
+  }).join('') + '</tbody></table>', JSON.stringify(d));
+}
+
+/* ────────── 调度 ────────── */
+var LOADERS = {
+  bot: [
+    ['status',     renderStatus,       true,  'p-status'],
+    ['life',       renderLife,         true,  'p-life'],
+    ['sd',         renderSd,           true,  'p-sd'],
+    ['sessions',   renderSessions,     true,  'p-sessions'],
+    ['meta',       renderMeta,         true,  'p-access'],
+    ['limits',     renderLimits,       true,  'p-limits'],
+    ['activity',   renderActivity,     true,  'p-activity'],
+    ['persona',    renderPersona,      false, 'p-persona'],
+    ['memory',     renderMemory,       false, 'p-memory'],
+    ['groupmem',   renderGroupMemory,  false, 'p-groupmem'],
+    ['mood',       renderMood,         false, 'p-mood'],
+    ['stickers',   renderStickers,     false, 'p-stickers'],
+    ['bili',       renderBili,         true,  'p-bili'],
+    ['crossgroup', renderCrossGroup,   true,  'p-crossgroup'],
+    ['tunables',   renderTunables,     false, 'p-tunables'],
+    ['vision',     renderVision,       false, 'p-vision'],
+    ['switches',   renderSwitches,     false, 'p-switches'],
+    ['lists',      renderLists,        false, 'p-lists'],
+    ['logs',       renderLogs,         false, 'p-logs'],
+    ['config',     renderConfig,       false, 'p-config']
+  ],
+  qzone: [
+    ['qzone-status',  renderQzoneStatus,  true, 'q-status'],
+    ['qzone-pollers', renderQzonePollers, true, 'q-pollers'],
+    ['qzone-features', renderQzoneFeatures, true, 'q-features'],
+    ['qzone-actions',  renderQzoneActions,  true, 'q-actions'],
+    ['qzone-posts',   renderQzonePosts,   true, 'q-posts'],
+    ['qzone-events',  renderQzoneEvents,  true, 'q-events']
+  ]
+};
+
+var failed = {};
+var loadedTabs = {bot: false, qzone: false};
+
+async function runOne(key, fn, boxId){
+  try{ await fn(); delete failed[key]; }
+  catch(e){
+    if(!failed[key]){
+      failed[key] = true;
+      setBox(boxId, errBox(key + ' 加载失败：' + (e && e.message ? e.message : e)));
+    }
+  }
+}
+
+var busy = false;
+async function refreshAll(force){
+  if(busy && !force) return;
+  busy = true;
+  try{
+    await loadHeader();
+    var list = LOADERS[tab] || [];
+    var first = !loadedTabs[tab];
+    if(first){
+      list.forEach(function(row){ setBox(row[3], skeleton(3)); });
+      loadedTabs[tab] = true;
+    }
+    var targets = (force || first) ? list : list.filter(function(r){ return r[2]; });
+    await Promise.all(targets.map(function(r){ return runOne(r[0], r[1], r[3]); }));
+  }finally{
+    busy = false;
+    highlight();
+  }
+}
+
+async function load(what){
+  var map = {
+    life:      ['life',      renderLife,      'p-life'],
+    memory:    ['memory',    renderMemory,    'p-memory'],
+    mood:      ['mood',      renderMood,      'p-mood'],
+    sd:        ['sd',        renderSd,        'p-sd'],
+    stickers:  ['stickers',  renderStickers,  'p-stickers']
+  };
+  var m = map[what];
+  if(!m) return;
+  await runOne(m[0], m[1], m[2]);
+}
+async function loadPersona(){ await runOne('persona', renderPersona, 'p-persona'); }
+async function reloadQzoneFeatures(){ await runOne('qzone-features', renderQzoneFeatures, 'q-features'); }
+async function reloadLogs(){ await runOne('logs', renderLogs, 'p-logs'); }
+async function reloadActivity(){ await runOne('activity', renderActivity, 'p-activity'); }
+async function reloadSessions(){ await runOne('sessions', renderSessions, 'p-sessions'); }
+
+/* boot：hash 记住上次的 tab；顶栏/导航先就位再拉数据 */
+(function boot(){
+  var want = (location.hash || '').replace(/^#/, '').replace(/^tab-/, '');
+  if(want === 'bot' || want === 'qzone') tab = want;
+  stickOffset();
+  mapSections();
+  applyTab(tab);
+  setTitle('ok');
+  refreshAll(true);
+  setInterval(function(){ if($('auto').checked) refreshAll(false); }, 5000);
+})();
+</script>
+</body>
+</html>

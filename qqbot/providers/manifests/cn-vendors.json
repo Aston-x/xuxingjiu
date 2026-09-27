@@ -1,0 +1,181 @@
+{
+  "manifest_version": 1,
+  "_readme": [
+    "国内厂商的接入定义。这里走的是各家**官方 OpenAI 兼容端点**，不是自家私有协议的签名版。",
+    "为什么这么选：文心/星火/混元的私有接口分别要 access_token 换取、HMAC 签名、TC3-HMAC-SHA256 签名，",
+    "实现又长又没法离线验证；而三家都已经提供兼容端点，功能等价、维护成本低得多。",
+    "需要私有协议（比如必须用某个签名参数）的场合，请按 providers/plugins/README.md 写一个 Python 插件。"
+  ],
+  "providers": [
+    {
+      "name": "ernie",
+      "protocol": "declarative",
+      "display_name": "百度文心 ERNIE（千帆 v2 兼容端点）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "vision_input": "none",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_key": "max_tokens",
+        "temperature_range": [0.0, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://qianfan.baidubce.com/v2，api_key 用千帆的 Bearer API Key。"
+    },
+    {
+      "name": "spark",
+      "protocol": "declarative",
+      "display_name": "讯飞星火（HTTP 兼容端点）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "vision_input": "none",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_key": "max_tokens",
+        "temperature_range": [0.0, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://spark-api-open.xf-yun.com/v1，api_key 填控制台的 APIPassword。"
+    },
+    {
+      "name": "hunyuan",
+      "protocol": "declarative",
+      "display_name": "腾讯混元（OpenAI 兼容端点）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_key": "max_tokens",
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.hunyuan.cloud.tencent.com/v1，api_key 用控制台的 API Key。"
+    },
+    {
+      "name": "baichuan",
+      "protocol": "declarative",
+      "display_name": "百川智能",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "streaming": true,
+        "temperature_range": [0.0, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.baichuan-ai.com/v1"
+    },
+    {
+      "name": "stepfun",
+      "protocol": "declarative",
+      "display_name": "阶跃星辰 StepFun",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.stepfun.com/v1"
+    }
+  ]
+}

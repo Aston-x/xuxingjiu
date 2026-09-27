@@ -1,0 +1,4834 @@
+/* ─────────────────────────────────────────────
+   QzoneClient – TypeScript 移植自 Python qzone_api/client.py
+   ───────────────────────────────────────────── */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { URL } from 'node:url';
+import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios';
+import { wrapper } from 'axios-cookiejar-support';
+import pLimit from 'p-limit';
+import { CookieJar } from 'tough-cookie';
+import {
+  calcGtk,
+  parseJsonp,
+  safeDecodeJsonResponse,
+  log,
+  htmlUnescape,
+} from './utils.js';
+import { saveCookies, loadCookies, deleteCookies } from './cookieStore.js';
+import type {
+  ApiResponse,
+  BestEffortAvailability,
+  BestEffortOptions,
+  CapabilityReport,
+  CapabilityStatus,
+  DiagnosticRef,
+  NormalizedItem,
+  PostIdentity,
+  PostMeta,
+  Routes,
+  SdkFailure,
+  SdkFailureKind,
+  SdkReliability,
+  SdkResult,
+  SdkSource,
+  SdkSuccess,
+  PlaywrightFeedSnapshot,
+  StrictOptions,
+  UploadImageResult,
+} from './types.js';
+import { parseRawResponse, isGenuineSuccess, type ParsedApiResult } from './requestLayer.js';
+import { validateApiResponse } from './validate.js';
+import type { SchemaName } from './schemas.js';
+import {
+  CACHE_TTL, AUTH_FAILURE_CODES, RATE_LIMIT_CODES, USER_AGENTS,
+  getRandomUserAgent, getRandomAcceptLanguage,
+} from './config/constants.js';
+import { env } from './config/env.js';
+import {
+  parseFeeds3Items as _parseFeeds3Items,
+  parseFeeds3Comments as _parseFeeds3Comments,
+  parseFeeds3Likes as _parseFeeds3Likes,
+  extractFriendsFromFeeds3FromText as _extractFriendsFromFeeds3FromText,
+  extractExternparam as _extractExternparam,
+} from './feeds3Parser.js';
+import type { Feeds3Like } from './feeds3Parser.js';
+import https from 'node:https';
+import { launchPlaywright } from './playwrightHelper.js';
+import { convertNamesToEmojis } from './emoji.js';
+
+const PUBLISH_IMAGE_UPLOAD_CONCURRENCY = 3;
+const UPLOAD_IMAGE_RETRY_COUNT = 2;
+
+type AxiosProxyConfig = NonNullable<AxiosRequestConfig['proxy']>;
+
+class Feeds3BusinessError extends Error {
+  payload: ApiResponse;
+
+  constructor(payload: ApiResponse) {
+    super(String(payload.message ?? payload.msg ?? 'feeds3 business failure'));
+    this.name = 'Feeds3BusinessError';
+    this.payload = payload;
+  }
+}
+
+// ──────────────────────────────────────────────
+// fetchImageWithAuth 辅助
+// ──────────────────────────────────────────────
+// TLS：ciphers/ALPN 已固定；如需更接近浏览器可考虑 sigalgs、ecdhCurve（Node 文档建议 ciphers 仅必要时使用，此处仅作排障/调优备注，不默认开启）
+const IMAGE_HTTPS_AGENT = new https.Agent({
+  keepAlive: false,
+  maxSockets: 8,
+  minVersion: 'TLSv1.2' as const,
+  maxVersion: 'TLSv1.3' as const,
+  ciphers: [
+    'TLS_AES_128_GCM_SHA256',
+    'TLS_AES_256_GCM_SHA384',
+    'TLS_CHACHA20_POLY1305_SHA256',
+    'ECDHE-ECDSA-AES128-GCM-SHA256',
+    'ECDHE-RSA-AES128-GCM-SHA256',
+    'ECDHE-ECDSA-AES256-GCM-SHA384',
+    'ECDHE-RSA-AES256-GCM-SHA384',
+  ].join(':'),
+  ALPNProtocols: ['http/1.1'],
+  rejectUnauthorized: true,
+});
+
+const PROXY_HEADERS_DROP = new Set([
+  'proxy-connection', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade',
+  'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'forwarded', 'via',
+  'x-real-ip', 'client-ip', 'x-cluster-client-ip', 'true-client-ip', 'cf-connecting-ip',
+]);
+
+function stripProxyHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (!PROXY_HEADERS_DROP.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
+function buildProxyFromUrl(proxyUrl: string): AxiosProxyConfig {
+  const u = new URL(proxyUrl);
+  if (!['http:', 'https:'].includes(u.protocol)) {
+    throw new Error(`unsupported proxy protocol: ${u.protocol}`);
+  }
+  const result: AxiosProxyConfig = {
+    protocol: u.protocol.replace(':', ''),
+    host: u.hostname,
+    port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)),
+  };
+  if (u.username) {
+    result.auth = {
+      username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password),
+    };
+  }
+  return result;
+}
+
+function isRetryableNetworkError(err: unknown): boolean {
+  const rec = err as Record<string, unknown>;
+  const code = rec?.code as string | undefined;
+  const msg = String(rec?.message ?? '');
+  const status = rec?.response && typeof (rec.response as Record<string, unknown>)?.status === 'number'
+    ? (rec.response as Record<string, unknown>).status as number
+    : undefined;
+  if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 'EPIPE', 'EPROTO', 'UND_ERR_SOCKET'].includes(code ?? '')) return true;
+  if (status === 502 || /502/i.test(msg)) return true;
+  if (/Client network socket disconnected before secure TLS connection was established/i.test(msg)) return true;
+  if (/socket hang up/i.test(msg)) return true;
+  if (/TLS/i.test(msg) && /disconnect/i.test(msg)) return true;
+  return false;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ──────────────────────────────────────────────
+// QzoneConfig
+// ──────────────────────────────────────────────
+export interface QzoneConfig {
+  cachePath: string;
+  proxyUrl?: string;
+  proxyPool?: string[];
+  /** 仅图片拉取走代理（如 http://127.0.0.1:7890），未设置则直连 */
+  imageProxyUrl?: string;
+}
+
+function defaultConfig(cfg?: Partial<QzoneConfig>): QzoneConfig {
+  return {
+    cachePath: env.cachePath,
+    proxyUrl: env.proxyUrl || undefined,
+    proxyPool: env.proxyPool
+      .split(/[,\r\n]+/)
+      .map(s => s.trim())
+      .filter(Boolean),
+    imageProxyUrl: env.imageProxyUrl || undefined,
+    ...cfg,
+  };
+}
+
+// ──────────────────────────────────────────────
+// QzoneClient
+// ──────────────────────────────────────────────
+export class QzoneClient {
+  readonly config: QzoneConfig;
+  cookies: Record<string, string> = {};
+  cookiesLastUsed: Date | null = null;
+  qqNumber: string | null = null;
+
+  private jar: CookieJar;
+  private http: AxiosInstance;
+  private proxyCursor = 0;
+
+  // caches
+  private qzonetokenCache: string | null = null;
+  private qzonetokenCacheTime = 0;
+  private qzonetokenTtl = CACHE_TTL.qzonetoken;
+  private qzonetokenFailTime = 0;
+  private qzonetokenFailTtl = CACHE_TTL.qzonetokenFail;
+  private playwrightFailTime = 0;
+  private playwrightCooldown = CACHE_TTL.playwrightFail;
+
+  private detailWinningVariant: number | null = null;
+  private detailAllFailTime = 0;
+  private detailAllFailTtl = CACHE_TTL.detailAllFail;
+
+  private feeds3Cache: Map<string, string> = new Map();
+  private feeds3CacheTime: Map<string, number> = new Map();
+  private feeds3CacheTtl = CACHE_TTL.feeds3;
+  private lastFeeds3BusinessFailure: ApiResponse | null = null;
+
+  /** feeds3 HTML 中解析出的评论：postTid → comment records（每次 getEmotionListViaFeeds3 刷新） */
+  feeds3Comments = new Map<string, Record<string, unknown>[]>();
+  private feeds3CommentsFetchedAt = new Map<string, number>();
+
+  /** feeds3 HTML 中解析出的点赞：postTid → Feeds3Like[]（每次 getEmotionListViaFeeds3 刷新） */
+  feeds3Likes = new Map<string, Feeds3Like[]>();
+  private feeds3LikesFetchedAt = new Map<string, number>();
+
+  /**
+   * 帖子元数据缓存：tid → { uin, appid, typeid, likeUnikey, likeCurkey, abstime }
+   * 由 getFriendFeeds / getEmotionListViaFeeds3 / poller 填充，
+   * likeEmotion / commentEmotion 在缺失参数时自动查询。
+   */
+  readonly postMetaCache = new Map<string, PostMeta>();
+  private static readonly POST_META_CAPACITY = 1000;
+
+  cachePostMeta(tid: string, meta: PostMeta): void {
+    if (!tid) return;
+    this.postMetaCache.set(tid, meta);
+    if (this.postMetaCache.size > QzoneClient.POST_META_CAPACITY) {
+      const oldest = this.postMetaCache.keys().next().value;
+      if (oldest) this.postMetaCache.delete(oldest);
+    }
+  }
+
+  getPostMeta(tid: string): PostMeta | undefined {
+    return this.postMetaCache.get(tid);
+  }
+
+  private mergeFeeds3Comments(
+    commentsByTid: Map<string, Record<string, unknown>[]>,
+    fetchedAt = Math.floor(Date.now() / 1000),
+  ): void {
+    for (const [postTid, cmts] of commentsByTid) {
+      const existing = this.feeds3Comments.get(postTid);
+      if (existing) {
+        const seenIds = new Set(existing.map(c => String(c['commentid'])));
+        for (const c of cmts) {
+          const commentId = String(c['commentid']);
+          if (!seenIds.has(commentId)) {
+            existing.push(c);
+            seenIds.add(commentId);
+          }
+        }
+      } else {
+        this.feeds3Comments.set(postTid, [...cmts]);
+      }
+      this.feeds3CommentsFetchedAt.set(postTid, fetchedAt);
+    }
+  }
+
+  private normalizeFeeds3LikesForTool(likes: Feeds3Like[]): Array<Record<string, unknown>> {
+    return likes.map(l => ({
+      uin: l.uin,
+      name: l.nickname,
+      time: l.abstime,
+      customItemId: l.customItemId,
+      _source: 'feeds3_html',
+    }));
+  }
+
+  private mergeFeeds3Likes(
+    likesByTid: Map<string, Feeds3Like[]>,
+    fetchedAt = Math.floor(Date.now() / 1000),
+  ): void {
+    for (const [postTid, likes] of likesByTid) {
+      const existing = this.feeds3Likes.get(postTid);
+      if (existing) {
+        const byUin = new Map(existing.map(l => [l.uin, l] as const));
+        for (const like of likes) {
+          const cur = byUin.get(like.uin);
+          if (!cur || like.abstime >= cur.abstime) byUin.set(like.uin, like);
+        }
+        const merged = [...byUin.values()];
+        this.feeds3Likes.set(postTid, merged);
+        this.feeds3LikesCache.set(postTid, this.normalizeFeeds3LikesForTool(merged));
+      } else {
+        this.feeds3Likes.set(postTid, [...likes]);
+        this.feeds3LikesCache.set(postTid, this.normalizeFeeds3LikesForTool(likes));
+      }
+      this.feeds3LikesFetchedAt.set(postTid, fetchedAt);
+    }
+  }
+
+  private mergeFeeds3AncillaryFromHtml(
+    htmlText: string,
+    fetchedAt = Math.floor(Date.now() / 1000),
+    source = 'feeds3',
+  ): void {
+    try {
+      this.mergeFeeds3Comments(_parseFeeds3Comments(htmlText), fetchedAt);
+    } catch (e) {
+      log('WARN', `${source}: parseFeeds3Comments failed: ${e}`);
+    }
+    try {
+      this.mergeFeeds3Likes(_parseFeeds3Likes(htmlText), fetchedAt);
+    } catch (e) {
+      log('WARN', `${source}: parseFeeds3Likes failed: ${e}`);
+    }
+  }
+
+  private commentCacheAgeSeconds(tid: string): number | null {
+    const fetchedAt = this.feeds3CommentsFetchedAt.get(tid);
+    if (fetchedAt == null) return null;
+    return Math.max(0, Math.floor(Date.now() / 1000) - fetchedAt);
+  }
+
+  private extractDetailTidFromTopicId(topicId: string): string {
+    const match = String(topicId ?? '').match(/^\d+_([a-z0-9]+)__\d+$/i);
+    return match?.[1] ?? '';
+  }
+
+  private collectPostEntityKeys(canonicalTid: string): string[] {
+    const keys = new Set<string>();
+    if (canonicalTid) keys.add(canonicalTid);
+    const meta = this.postMetaCache.get(canonicalTid);
+    if (!meta) return [...keys];
+    if (meta.detailTid) keys.add(meta.detailTid);
+    if (meta.topicId) {
+      keys.add(meta.topicId);
+      const topicDetailTid = this.extractDetailTidFromTopicId(meta.topicId);
+      if (topicDetailTid) keys.add(topicDetailTid);
+    }
+    if (meta.sourceFkey) keys.add(meta.sourceFkey);
+    if (meta.abstime > 0) {
+      keys.add(String(meta.abstime));
+      if (meta.uin) keys.add(`d${meta.uin}_${meta.abstime}_`);
+    }
+    if (meta.detailUrl) keys.add(meta.detailUrl);
+    if (meta.likeUnikey) keys.add(meta.likeUnikey);
+    if (meta.likeCurkey) keys.add(meta.likeCurkey);
+    return [...keys];
+  }
+
+  private selectFeeds3AliasSourceKey<T>(
+    canonicalTid: string,
+    buckets: Map<string, T[]>,
+    label: string,
+  ): string | null {
+    if (!canonicalTid || buckets.has(canonicalTid)) return null;
+    const meta = this.postMetaCache.get(canonicalTid);
+    const authorUin = meta?.uin?.trim() ?? '';
+    const detailTid = meta?.detailTid?.trim() ?? '';
+    const topicDetailTid = this.extractDetailTidFromTopicId(meta?.topicId ?? '');
+    const sourceFkey = meta?.sourceFkey?.trim() ?? '';
+    const detailUrl = meta?.detailUrl?.trim() ?? '';
+    const abstime = meta?.abstime;
+    const asStr = abstime != null && abstime > 0 ? String(abstime) : '';
+    const embedded = asStr ? `_${asStr}_` : '';
+    const preferredPrefix = authorUin && asStr ? `d${authorUin}_${asStr}_` : '';
+    const candidates: Array<{ key: string; score: number }> = [];
+    for (const [key, list] of buckets) {
+      if (!list?.length || key === canonicalTid) continue;
+      const keyTrimmed = key.trim();
+      const matchesAbstime = Boolean(asStr) && (keyTrimmed === asStr || keyTrimmed.includes(embedded));
+      const matchesDetailTid = Boolean(detailTid) && keyTrimmed === detailTid;
+      const matchesTopicTid = Boolean(topicDetailTid) && keyTrimmed === topicDetailTid;
+      const matchesSourceFkey = Boolean(sourceFkey) && keyTrimmed === sourceFkey;
+      const matchesDetailUrl = Boolean(detailUrl) && keyTrimmed === detailUrl;
+      if (!(matchesAbstime || matchesDetailTid || matchesTopicTid || matchesSourceFkey || matchesDetailUrl)) continue;
+      if (authorUin && keyTrimmed.startsWith('d') && !keyTrimmed.startsWith(`d${authorUin}_`)) continue;
+      let score = 0;
+      if (matchesDetailTid) score += 8;
+      if (matchesTopicTid) score += 7;
+      if (matchesSourceFkey) score += 6;
+      if (matchesDetailUrl) score += 5;
+      if (preferredPrefix && keyTrimmed.startsWith(preferredPrefix)) score += 4;
+      else if (authorUin && keyTrimmed.startsWith(`d${authorUin}_`)) score += 2;
+      if (matchesAbstime && keyTrimmed === asStr) score += 3;
+      else if (matchesAbstime) score += 1;
+      candidates.push({ key, score });
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+    const best = candidates[0]!;
+    if (candidates.length > 1 && candidates[1]!.score === best.score) {
+      log('WARNING', `${label}: skip ${canonicalTid}, matched multiple candidate buckets with same score`);
+      return null;
+    }
+    return best.key;
+  }
+
+  /**
+   * parseFeeds3Comments 按回复链里的 t1_tid 分桶（常为 d{uin}_{abstime}_…），说说列表 tid 常为 fkey。
+   * 在 postMetaCache 已有该 fkey 的 abstime 时，把评论数组挂到 fkey 下，供 getCommentsBestEffort(tid) 命中。
+   *
+   * 注意：同一 uin 在同一秒可能有多条动态，多个内部桶会同时包含 `_${abstime}_`。
+   * 旧逻辑取「评论数最多」的桶，易把**相邻帖/转发帖**的评论挂到错误 hex tid（假串帖）。
+   * 现逻辑：先按作者 uin 收窄 `d{uin}_` 前缀桶；若仍有多候选则**放弃别名**（宁缺勿滥）。
+   */
+  private aliasFeeds3CommentsToCanonicalTid(canonicalTid: string): void {
+    const bestKey = this.selectFeeds3AliasSourceKey(
+      canonicalTid,
+      this.feeds3Comments,
+      'aliasFeeds3CommentsToCanonicalTid',
+    );
+    if (!bestKey) return;
+    const cmts = this.feeds3Comments.get(bestKey)!;
+    this.feeds3Comments.set(canonicalTid, cmts);
+    const ft = this.feeds3CommentsFetchedAt.get(bestKey);
+    if (ft != null) this.feeds3CommentsFetchedAt.set(canonicalTid, ft);
+    log(
+      'DEBUG',
+      `aliasFeeds3CommentsToCanonicalTid: ${canonicalTid} <- ${bestKey.length > 56 ? `${bestKey.slice(0, 56)}…` : bestKey}`,
+    );
+  }
+
+  /**
+   * 若传入的 tid 实为 abstime（纯数字），用 postMetaCache 反查对应的 key（hex tid），
+   * 评论接口 PC/mobile 需要 key 格式，用 abstime 会返回空或 -3。
+   */
+  private aliasFeeds3LikesToCanonicalTid(canonicalTid: string): void {
+    const bestKey = this.selectFeeds3AliasSourceKey(canonicalTid, this.feeds3Likes, 'aliasFeeds3LikesToCanonicalTid');
+    if (!bestKey) return;
+    const likes = this.feeds3Likes.get(bestKey)!;
+    this.feeds3Likes.set(canonicalTid, likes);
+    this.feeds3LikesCache.set(canonicalTid, this.feeds3LikesCache.get(bestKey) ?? this.normalizeFeeds3LikesForTool(likes));
+    const ft = this.feeds3LikesFetchedAt.get(bestKey);
+    if (ft != null) this.feeds3LikesFetchedAt.set(canonicalTid, ft);
+    log(
+      'DEBUG',
+      `aliasFeeds3LikesToCanonicalTid: ${canonicalTid} <- ${bestKey.length > 56 ? `${bestKey.slice(0, 56)}...` : bestKey}`,
+    );
+  }
+
+  resolveTidForComments(tid: string): string {
+    if (!tid || !/^\d+$/.test(tid)) return tid;
+    const abstime = Number(tid);
+    for (const [key, meta] of this.postMetaCache) {
+      if (meta.abstime === abstime) {
+        log('DEBUG', `resolveTidForComments: abstime ${tid} -> key ${key}`);
+        return key;
+      }
+    }
+    return tid;
+  }
+
+  /** 从 feeds3 解析结果（Record）中提取元数据并写入缓存 */
+  cachePostMetaFromRaw(item: Record<string, unknown>): void {
+    const tid = String(item['tid'] ?? '');
+    if (!tid) return;
+    const uin = String(item['uin'] ?? '');
+    const appid = String(item['appid'] ?? '311');
+    const typeid = String(item['typeid'] ?? '0');
+    const likeUnikey = String(item['likeUnikey'] ?? '');
+    const likeCurkey = String(item['likeCurkey'] ?? '');
+    const abstime = Number(item['created_time'] ?? item['createTime'] ?? 0);
+    const topicId = String(item['topicId'] ?? '');
+    const detailTid = String(item['detailTid'] ?? '');
+    const detailUrl = String(item['detailUrl'] ?? '');
+    const sourceFkey = String(item['sourceFkey'] ?? '');
+    const cmtnum = Number(item['cmtnum'] ?? 0);
+    const likenum = Number(item['likenum'] ?? 0);
+    this.cachePostMeta(tid, {
+      uin,
+      appid,
+      typeid,
+      likeUnikey,
+      likeCurkey,
+      abstime,
+      topicId: topicId || undefined,
+      detailTid: detailTid || undefined,
+      detailUrl: detailUrl || undefined,
+      sourceFkey: sourceFkey || undefined,
+      cmtnum: Number.isFinite(cmtnum) ? cmtnum : undefined,
+      likenum: Number.isFinite(likenum) ? likenum : undefined,
+    });
+  }
+
+  /** msglist 条目的 tid / cellid 与目标 tid 匹配（避免 string/number 严格 === 漏匹配） */
+  private itemMatchesTid(item: Record<string, unknown>, tid: string): boolean {
+    const w = String(tid).trim();
+    return String(item['tid'] ?? '').trim() === w || String(item['cellid'] ?? '').trim() === w;
+  }
+
+  /**
+   * PC 详情全灭时：分页搜 feeds_html_act_all 的 msglist，命中则同 list 兜底展开到顶层。
+   */
+  private async detailFromActAllMsglist(uin: string, tid: string): Promise<ApiResponse | null> {
+    let start = 0;
+    const count = 30;
+    for (let p = 0; p < 18; p++) {
+      const act = await this.getFeedsHtmlActAll(uin, { hostUin: uin, start, count, scope: 0 });
+      if (Number(act['code'] ?? 0) !== 0) break;
+      const list = (act['msglist'] as Record<string, unknown>[]) ?? [];
+      for (const msg of list) {
+        if (!this.itemMatchesTid(msg, tid)) continue;
+        return {
+          ...msg,
+          code: 0,
+          data: msg,
+          message: 'success (from act_all list)',
+          _detail_semantic: {
+            source: 'feeds_html_act_all_fallback',
+            note:
+              'getdetailv6/mobile 不可用；正文来自 ic2 feeds_html_act_all 列表项，已展开到顶层 content/conlist。',
+          },
+        } as ApiResponse;
+      }
+      if (!act['has_more']) break;
+      const ns = act['next_start'];
+      start = typeof ns === 'number' && Number.isFinite(ns) ? ns : start + count;
+    }
+    return null;
+  }
+
+  /** 好友缓存：uin -> { uin, nickname, avatar, lastSeen }，持久化到 friends.json */
+  private friendCache: Map<string, { uin: string; nickname: string; avatar: string; lastSeen: number }> = new Map();
+  private playwrightFeedBrowser: any | null = null;
+  private playwrightFeedContext: any | null = null;
+  private playwrightFeedPage: any | null = null;
+  private readonly playwrightFeedPosts = new Map<string, Record<string, unknown>>();
+  private readonly playwrightFeedPendingParses = new Set<Promise<void>>();
+  private playwrightFeedListenerAttached = false;
+  private playwrightFeedDomFallbackUsed = false;
+  private playwrightFeedNetworkIntercepted = false;
+  private playwrightFeedInterceptedResponseCount = 0;
+
+  routes: Routes = {
+    comments: 'pc',
+    detail: 'pc',
+    delete_comment: 'pc',
+    unlike: 'mobile_like_active_1',
+  };
+
+  constructor(config?: Partial<QzoneConfig>) {
+    this.config = defaultConfig(config);
+    this.jar = new CookieJar();
+    const baseInstance = axios.create({
+      timeout: 20000,
+      maxRedirects: 5,
+      validateStatus: () => true,  // 不抛出 HTTP 错误
+    });
+    baseInstance.interceptors.request.use((requestConfig) => {
+      requestConfig.proxy = this.resolveAxiosProxy(requestConfig.proxy);
+      return requestConfig;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.http = wrapper(baseInstance as any) as AxiosInstance;
+    (this.http.defaults as Record<string, unknown>).jar = this.jar;
+    this.loadCookies();
+    this.loadFriendCache();
+  }
+
+  get loggedIn(): boolean {
+    return this.qqNumber !== null;
+  }
+
+  // ──────────────────────────────────────────────
+  // Cookie helpers
+  // ──────────────────────────────────────────────
+  private get cookiePath(): string {
+    return path.join(this.config.cachePath, 'cookies.json');
+  }
+
+  private get qrcodePath(): string {
+    return path.join(this.config.cachePath, 'qrcode.png');
+  }
+
+  private get friendCachePath(): string {
+    return path.join(this.config.cachePath, 'friends.json');
+  }
+
+  loadCookies(): void {
+    const result = loadCookies(this.cookiePath);
+    if (!result) return;
+    this.cookies = result.cookies;
+    this.cookiesLastUsed = result.lastUsed;
+    this._syncJarFromMap();
+    const rawUin = this.cookies['uin'] ?? '';
+    this.qqNumber = rawUin.replace(/^[oO]/, '') || null;
+  }
+
+  loadFriendCache(): void {
+    try {
+      const raw = fs.readFileSync(this.friendCachePath, 'utf8');
+      const arr = JSON.parse(raw) as Array<{ uin: string; nickname: string; avatar: string; lastSeen?: number }>;
+      if (Array.isArray(arr)) {
+        this.friendCache.clear();
+        const now = Math.floor(Date.now() / 1000);
+        for (const o of arr) {
+          if (o && o.uin) {
+            this.friendCache.set(o.uin, {
+              uin: o.uin,
+              nickname: o.nickname ?? '',
+              avatar: o.avatar ?? '',
+              lastSeen: o.lastSeen ?? now,
+            });
+          }
+        }
+        log('DEBUG', `loadFriendCache: ${this.friendCache.size} friends`);
+      }
+    } catch {
+      // 无文件或解析失败则保持空缓存
+    }
+  }
+
+  saveFriendCache(): void {
+    try {
+      const arr = Array.from(this.friendCache.values());
+      fs.writeFileSync(this.friendCachePath, JSON.stringify(arr, null, 2), 'utf8');
+      log('DEBUG', `saveFriendCache: ${arr.length} friends`);
+    } catch (e) {
+      log('WARNING', `saveFriendCache failed: ${e}`);
+    }
+  }
+
+  /**
+   * 将本次提取的好友列表合并进内存缓存并持久化。仅更新 lastSeen；昵称/头像以新数据覆盖旧。
+   */
+  private mergeFriendCache(
+    items: Array<{ uin: string; nickname: string; avatar: string }>,
+  ): void {
+    if (!items.length) return;
+    const now = Math.floor(Date.now() / 1000);
+    for (const it of items) {
+      const existing = this.friendCache.get(it.uin);
+      this.friendCache.set(it.uin, {
+        uin: it.uin,
+        nickname: (it.nickname || existing?.nickname) ?? '',
+        avatar: (it.avatar || existing?.avatar) ?? '',
+        lastSeen: now,
+      });
+    }
+    this.saveFriendCache();
+  }
+
+  private saveCookies(): void {
+    this.cookiesLastUsed = new Date();
+    saveCookies(this.cookiePath, this.cookies);
+  }
+
+  /** 将当前 cookies 序列化为 Cookie 字符串（可直接写入 .env / 浏览器） */
+  getCookieString(): string {
+    return Object.entries(this.cookies)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ');
+  }
+
+  /**
+   * 将最新 Cookie 自动写回 .env 文件的 QZONE_COOKIE 字段。
+   * 这样即使进程重启，.env 里也是最新的 Cookie，无需手动更新。
+   */
+  syncCookieToEnvFile(envPath?: string): void {
+    const target = envPath ?? path.join(process.cwd(), '.env');
+    try {
+      if (!fs.existsSync(target)) return;
+      let content = fs.readFileSync(target, 'utf8');
+      const newCookie = this.getCookieString();
+      if (!newCookie) return;
+
+      // 同时替换 QZONE_COOKIE_STRING 和 QZONE_COOKIE，避免重启后优先读到过期的 QZONE_COOKIE_STRING
+      for (const key of ['QZONE_COOKIE_STRING', 'QZONE_COOKIE']) {
+        const re = new RegExp(`^${key}=.*`, 'm');
+        if (re.test(content)) {
+          content = content.replace(re, `${key}=${newCookie}`);
+        }
+      }
+      if (!/^QZONE_COOKIE=/m.test(content)) {
+        content += `\nQZONE_COOKIE=${newCookie}\n`;
+      }
+      fs.writeFileSync(target, content, 'utf8');
+      log('INFO', '.env 文件 QZONE_COOKIE / QZONE_COOKIE_STRING 已自动更新');
+    } catch (e) {
+      log('WARNING', `同步 Cookie 到 .env 失败: ${e}`);
+    }
+  }
+
+  private deleteCookies(): void {
+    this.cookies = {};
+    this.jar = new CookieJar();
+    (this.http.defaults as Record<string, unknown>).jar = this.jar;
+    deleteCookies(this.cookiePath);
+  }
+
+  /** 把 cookies map 注入 tough-cookie jar（.qq.com 域 + ptlogin2 域） */
+  private _syncJarFromMap(): void {
+    for (const [name, value] of Object.entries(this.cookies)) {
+      for (const domain of ['.qq.com', '.qzone.qq.com', '.ptlogin2.qq.com']) {
+        this.jar.setCookieSync(`${name}=${value}; Domain=${domain}; Path=/`, `https://${domain.replace(/^\./, '')}/`);
+      }
+    }
+  }
+
+  /** 从 jar 里同步回 cookies map（.qq.com + ptlogin2 子域） */
+  private _syncMapFromJar(): void {
+    const urls = [
+      'https://qq.com/',
+      'https://ptlogin2.qq.com/',
+      'https://ssl.ptlogin2.qq.com/',
+      'https://xui.ptlogin2.qq.com/',
+      'https://qzone.qq.com/',
+    ];
+    for (const u of urls) {
+      const allCookies = this.jar.getCookiesSync(u, { allPaths: true });
+      for (const c of allCookies) {
+        this.cookies[c.key] = c.value;
+      }
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // HTTP 封装
+  // ──────────────────────────────────────────────
+  private getProxyCandidates(): string[] {
+    if (Array.isArray(this.config.proxyPool) && this.config.proxyPool.length > 0) {
+      return this.config.proxyPool.filter(Boolean);
+    }
+    return this.config.proxyUrl ? [this.config.proxyUrl] : [];
+  }
+
+  private nextProxyUrl(): string | null {
+    const proxies = this.getProxyCandidates();
+    if (proxies.length === 0) return null;
+    const index = this.proxyCursor % proxies.length;
+    this.proxyCursor = (this.proxyCursor + 1) % proxies.length;
+    return proxies[index] ?? null;
+  }
+
+  private resolveAxiosProxy(currentProxy: AxiosRequestConfig['proxy']): AxiosRequestConfig['proxy'] {
+    if (currentProxy === false || currentProxy) return currentProxy;
+    const proxyUrl = this.nextProxyUrl();
+    return proxyUrl ? buildProxyFromUrl(proxyUrl) : false;
+  }
+
+  async request(
+    method: 'GET' | 'POST',
+    url: string,
+    options: AxiosRequestConfig = {},
+  ): Promise<{ status: number; data: Buffer; text: string }> {
+    // 手动注入 cookies
+    if (this.cookies && Object.keys(this.cookies).length > 0) {
+      const cookieStr = Object.entries(this.cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+      if (cookieStr) {
+        options.headers = { ...options.headers, Cookie: cookieStr };
+      }
+    }
+
+    options.responseType = 'arraybuffer';
+
+    const resp = await this.http.request({ method, url, ...options });
+
+    // 同步 cookie（仅 .qq.com 相关域）
+    this._syncMapFromJar();
+
+    const data = Buffer.from(resp.data as ArrayBuffer);
+    const text = data.toString('utf8');
+
+    if (data.length === 0 && resp.status === 200) {
+      log('DEBUG', `[empty-200] ${method} ${url.slice(0, 120)}`);
+    } else if (resp.status >= 400) {
+      log('WARNING', `[http-${resp.status}] ${method} ${url.slice(0, 120)}`);
+    }
+
+    return { status: resp.status, data, text };
+  }
+
+  async get(url: string, options: AxiosRequestConfig = {}) {
+    return this.request('GET', url, options);
+  }
+
+  /**
+   * 使用当前 Cookie + Referer 拉取图片（用于 QZone CDN 需鉴权的 URL）。
+   * 仅应在白名单 URL 上调用，避免 SSRF。
+   * 使用固定 TLS/ALPN 的独立 https.Agent；若配置了 imageProxyUrl 则走 Axios 内置 proxy，
+   * 否则关闭环境变量代理（proxy: false），确保代理路径单一。
+   */
+  async fetchImageWithAuth(url: string): Promise<{ data: Buffer; contentType: string }> {
+    // #region agent log
+    try {
+      const payload = { location: 'client.ts:fetchImageWithAuth', message: 'proxy config', data: { hasImageProxyUrl: !!this.config.imageProxyUrl, imageProxyPrefix: this.config.imageProxyUrl ? this.config.imageProxyUrl.slice(0, 28) : null }, timestamp: Date.now(), hypothesisId: 'H1' as const };
+      fs.appendFileSync(path.join(this.config.cachePath, 'debug.log'), JSON.stringify(payload) + '\n');
+    } catch (_) {}
+    // #endregion
+    // photo.store.qq.com 对 HTTP 常返回 502，统一用 HTTPS 请求
+    const requestUrl = url.includes('photo.store.qq.com') && url.startsWith('http://')
+      ? url.replace(/^http:\/\//i, 'https://')
+      : url;
+    const headers: Record<string, string> = {
+      'Referer': 'https://user.qzone.qq.com/',
+      'User-Agent': this.getRandomizedUserAgent(),
+      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': this.getRandomizedAcceptLanguage(),
+      'Sec-Fetch-Dest': 'image',
+      'Sec-Fetch-Mode': 'no-cors',
+      'Sec-Fetch-Site': 'cross-site',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    };
+    if (this.cookies && Object.keys(this.cookies).length > 0) {
+      const cookieStr = Object.entries(this.cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+      if (cookieStr) headers['Cookie'] = cookieStr;
+    }
+    const requestHeaders = stripProxyHeaders(headers);
+    const debugTls = process.env['QZONE_IMAGE_DEBUG_TLS'] === '1';
+    const httpsAgent = debugTls
+      ? new https.Agent({
+          keepAlive: false, maxSockets: 8,
+          minVersion: 'TLSv1.2' as const, maxVersion: 'TLSv1.3' as const,
+          ciphers: IMAGE_HTTPS_AGENT.options.ciphers as string,
+          ALPNProtocols: ['http/1.1'], rejectUnauthorized: true, enableTrace: true,
+        })
+      : IMAGE_HTTPS_AGENT;
+    const requestConfig: AxiosRequestConfig = {
+      headers: requestHeaders,
+      responseType: 'arraybuffer',
+      httpsAgent,
+      timeout: 15000,
+      validateStatus: (status: number) => status >= 200 && status < 400,
+      maxRedirects: 0,
+    };
+    if (this.config.imageProxyUrl) {
+      requestConfig.proxy = buildProxyFromUrl(this.config.imageProxyUrl);
+    } else {
+      requestConfig.proxy = this.resolveAxiosProxy(undefined);
+    }
+    const httpClient = axios.create({
+      timeout: 15000,
+      validateStatus: (s: number) => s >= 200 && s < 400,
+      transitional: { clarifyTimeoutError: true },
+    });
+    const retries = 3;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const resp = await httpClient.get(requestUrl, requestConfig);
+        const data = Buffer.from(resp.data as ArrayBuffer);
+        if (data.length === 0) {
+          throw new Error(`fetchImageWithAuth: ${resp.status} or empty body`);
+        }
+        const contentType = (resp.headers && resp.headers['content-type'])
+          ? String(resp.headers['content-type']).split(';')[0]!.trim()
+          : 'image/jpeg';
+        return { data, contentType };
+      } catch (err: unknown) {
+        lastErr = err;
+        const retryable = isRetryableNetworkError(err);
+        const finalAttempt = attempt >= retries;
+        if (!retryable || finalAttempt) {
+          // #region agent log
+          const payload = { location: 'client.ts:fetchImageWithAuth', message: 'non-200 or empty', data: { status: (err as Record<string, unknown>)?.response ? ((err as Record<string, unknown>).response as Record<string, unknown>)?.status : null, attempts: attempt + 1, urlPrefix: url.slice(0, 70), errMsg: String((err as Error)?.message ?? '').slice(0, 120) }, timestamp: Date.now(), hypothesisId: 'H4' as const };
+          try { fs.appendFileSync(path.join(this.config.cachePath, 'debug.log'), JSON.stringify(payload) + '\n'); } catch (_) {}
+          // #endregion
+          throw err;
+        }
+        const backoff = 250 * Math.pow(2, attempt) + Math.floor(Math.random() * 120);
+        await sleepMs(backoff);
+      }
+    }
+    throw lastErr;
+  }
+
+  /**
+   * 增强型请求：自动 JSONP 解壳 + 反爬检测 + 可选 Zod 校验
+   */
+  async requestParsed(
+    method: 'GET' | 'POST',
+    url: string,
+    options: AxiosRequestConfig = {},
+    opts?: { schemaName?: SchemaName; apiLabel?: string; jsonpCallback?: string },
+  ): Promise<ParsedApiResult> {
+    const resp = await this.request(method, url, options);
+    return parseRawResponse(resp.status, resp.text, opts);
+  }
+
+  /** 便捷 GET → ParsedApiResult */
+  async getParsed(
+    url: string,
+    options: AxiosRequestConfig = {},
+    opts?: { schemaName?: SchemaName; apiLabel?: string; jsonpCallback?: string },
+  ): Promise<ParsedApiResult> {
+    return this.requestParsed('GET', url, options, opts);
+  }
+
+  /** 便捷 POST → ParsedApiResult */
+  async postParsed(
+    url: string,
+    options: AxiosRequestConfig = {},
+    opts?: { schemaName?: SchemaName; apiLabel?: string; jsonpCallback?: string },
+  ): Promise<ParsedApiResult> {
+    return this.requestParsed('POST', url, options, opts);
+  }
+
+  async post(url: string, options: AxiosRequestConfig = {}) {
+    // 自动注入 Origin
+    const headers = (options.headers ?? {}) as Record<string, string>;
+    if (!headers['Origin']) {
+      if (url.includes('user.qzone.qq.com') || url.includes('taotao.qzone.qq.com') || url.includes('sns.qzone.qq.com')) {
+        headers['Origin'] = 'https://user.qzone.qq.com';
+      } else if (url.includes('up.qzone.qq.com')) {
+        headers['Origin'] = 'https://up.qzone.qq.com';
+      } else if (url.includes('mobile.qzone.qq.com') || url.includes('h5.qzone.qq.com')) {
+        headers['Origin'] = 'https://mobile.qzone.qq.com';
+      } else {
+        headers['Origin'] = 'https://qzs.qzone.qq.com';
+      }
+    }
+    options.headers = headers;
+    return this.request('POST', url, options);
+  }
+
+  // ──────────────────────────────────────────────
+  // Header 工厂
+  // ──────────────────────────────────────────────
+  private static UA = USER_AGENTS.desktop;
+  private static SEC_CH_UA = USER_AGENTS.secChUa;
+
+  /** 请求指纹随机化：随机选择 User-Agent */
+  private getRandomizedUserAgent(): string {
+    return getRandomUserAgent();
+  }
+
+  /** 请求指纹随机化：随机选择 Accept-Language */
+  private getRandomizedAcceptLanguage(): string {
+    return getRandomAcceptLanguage();
+  }
+
+  private pcHeaders(referrer?: string, origin?: string): Record<string, string> {
+    const h: Record<string, string> = {
+      'User-Agent': this.getRandomizedUserAgent(),
+      'Referer': referrer ?? 'https://qzs.qzone.qq.com/',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': this.getRandomizedAcceptLanguage(),
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Sec-Ch-Ua': QzoneClient.SEC_CH_UA,
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'same-site',
+      'Cache-Control': 'max-age=0',
+    };
+    if (origin) h['Origin'] = origin;
+    return h;
+  }
+
+  private mobileHeaders(origin?: string): Record<string, string> {
+    const h: Record<string, string> = {
+      'User-Agent': USER_AGENTS.mobile,
+      'Referer': 'https://mobile.qzone.qq.com',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': this.getRandomizedAcceptLanguage(),
+      'Accept-Encoding': 'gzip, deflate, br',
+      'X-Requested-With': 'XMLHttpRequest',
+    };
+    if (origin) h['Origin'] = origin;
+    return h;
+  }
+
+
+
+  // ──────────────────────────────────────────────
+  // CSRF / Auth
+  // ──────────────────────────────────────────────
+  getGtk(): number {
+    const pSkey = this.cookies['p_skey'] ?? '';
+    if (pSkey) return calcGtk(pSkey);
+    const skey = this.cookies['skey'] ?? '';
+    if (skey) return calcGtk(skey);
+    log('WARNING', 'p_skey 和 skey 均为空，g_tk 将为 5381');
+    return calcGtk('');
+  }
+
+  private getQzreferrer(): string {
+    return `https://user.qzone.qq.com/${this.qqNumber}/main`;
+  }
+
+  isAuthFailure(payload: ApiResponse): boolean {
+    const code = payload.code as number | undefined;
+    const subcode = Number(payload.subcode ?? 0);
+    const message = this.describeApiFailure(payload).toLowerCase();
+    if (code !== undefined && AUTH_FAILURE_CODES.has(code)) return true;
+    if (subcode === -4001) return true;
+    return /need\s+login|请先登录|需要登录|未登录|登录后/i.test(message);
+  }
+
+  private describeApiFailure(payload: ApiResponse): string {
+    const parts = [
+      typeof payload.message === 'string' ? payload.message.trim() : '',
+      typeof payload.msg === 'string' ? payload.msg.trim() : '',
+      typeof payload['tips'] === 'string' ? String(payload['tips']).trim() : '',
+    ].filter(Boolean);
+    return parts.join(' | ');
+  }
+
+  private getApiFailureKind(payload: ApiResponse): SdkFailureKind {
+    if (this.isAuthFailure(payload)) return 'auth';
+    if (RATE_LIMIT_CODES.has(Number(payload.code ?? 0))) return 'rate_limit';
+    return 'upstream_changed';
+  }
+
+  private extractFeeds3BusinessFailure(respText: string): ApiResponse | null {
+    try {
+      const parsed = parseJsonp(respText) as ApiResponse;
+      if (!parsed || typeof parsed !== 'object') return null;
+      const code = Number(parsed.code);
+      const hasBusinessCode = Number.isFinite(code) && code !== 0;
+      const needsLogin = this.isAuthFailure(parsed);
+      if (!hasBusinessCode && !needsLogin) return null;
+      return {
+        ...parsed,
+        message: String((parsed.message ?? parsed.msg ?? this.describeApiFailure(parsed)) || 'feeds3 business failure'),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private extractFeeds3BusinessError(error: unknown): ApiResponse | null {
+    if (error instanceof Feeds3BusinessError) return error.payload;
+    if (error instanceof Error && 'payload' in error) {
+      const payload = (error as Error & { payload?: ApiResponse }).payload;
+      if (payload && typeof payload === 'object') return payload;
+    }
+    return null;
+  }
+
+  private requireLogin(): void {
+    if (!this.loggedIn) throw new Error('未登录');
+  }
+
+  dumpDebugPayload(name: string, content: string): void {
+    if (!env.debugDump) return;
+    const dir = path.join(this.config.cachePath, 'debug');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.TZ]/g, '').slice(0, 15);
+    fs.writeFileSync(path.join(dir, `${name}_${ts}.txt`), content, 'utf8');
+  }
+
+  private ensureDiagnosticDir(category: DiagnosticRef['category']): string {
+    const dir = path.join(this.config.cachePath, 'diagnostics', category);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  private createDiagnosticRef(
+    category: DiagnosticRef['category'],
+    payload: Record<string, unknown>,
+    preferredId?: string,
+  ): DiagnosticRef {
+    const createdAt = new Date().toISOString();
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const diagnosticId = preferredId ?? `${category}-${Date.now()}-${suffix}`;
+    const dir = this.ensureDiagnosticDir(category);
+    const filePath = path.join(dir, `${diagnosticId}.json`);
+    fs.writeFileSync(filePath, JSON.stringify({ diagnostic_id: diagnosticId, created_at: createdAt, ...payload }, null, 2), 'utf8');
+    return {
+      diagnostic_id: diagnosticId,
+      category,
+      path: filePath,
+      created_at: createdAt,
+    };
+  }
+
+  private sdkSuccess<T>(
+    data: T,
+    source: SdkSource,
+    reliability: SdkReliability,
+    warnings: string[] = [],
+    diagnostic?: DiagnosticRef,
+  ): SdkSuccess<T> {
+    return { ok: true, data, source, reliability, warnings, diagnostic };
+  }
+
+  private sdkFailure(
+    kind: SdkFailureKind,
+    retryable: boolean,
+    reliability: SdkReliability,
+    details: SdkFailure['details'],
+    source?: SdkSource,
+    warnings: string[] = [],
+    diagnostic?: DiagnosticRef,
+  ): SdkFailure {
+    return { ok: false, kind, retryable, reliability, details, source, warnings, diagnostic };
+  }
+
+  private inferSdkSource(raw: unknown, fallback: SdkSource): SdkSource {
+    const source = String(raw ?? '').trim();
+    if (source === 'feeds3' || source === 'feeds3_html' || source === 'feeds3_html_more') return 'feeds3_html';
+    if (source === 'feeds_html_act_all') return 'act_all_html';
+    if (source === 'cache') return 'cache';
+    if (source === 'derived') return 'derived';
+    return fallback;
+  }
+
+  private classifySdkFailure(error: unknown, endpoint: string, uin?: string, tid?: string): SdkFailure {
+    const payload = this.extractFeeds3BusinessError(error);
+    if (payload) {
+      const kind = this.getApiFailureKind(payload);
+      return this.sdkFailure(
+        kind,
+        kind === 'rate_limit',
+        endpoint.includes('Strict') ? 'strict' : 'best_effort',
+        {
+          endpoint,
+          uin,
+          tid,
+          message: this.describeApiFailure(payload) || 'feeds3 request failed',
+        },
+        'feeds3_html',
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    let kind: SdkFailureKind = 'network';
+    let retryable = true;
+    if (/login|auth|skey|p_skey|未登录/i.test(message)) {
+      kind = 'auth';
+      retryable = false;
+    } else if (/rate|频|too many|限流/i.test(message)) {
+      kind = 'rate_limit';
+    } else if (/not support|unsupported|暂不支持/i.test(message)) {
+      kind = 'not_supported';
+      retryable = false;
+    } else if (/parse|bucket|html/i.test(message)) {
+      kind = 'parse_miss';
+    }
+    return this.sdkFailure(kind, retryable, endpoint.includes('Strict') ? 'strict' : 'best_effort', {
+      endpoint,
+      uin,
+      tid,
+      message,
+    });
+  }
+
+  private buildPostIdentity(tid: string, fallbackUin = ''): PostIdentity {
+    const meta = this.postMetaCache.get(tid);
+    return {
+      canonicalTid: tid,
+      uin: meta?.uin ?? fallbackUin,
+      abstime: meta?.abstime,
+      sourceFkey: meta?.sourceFkey,
+      topicId: meta?.topicId,
+      detailTid: meta?.detailTid,
+      detailUrl: meta?.detailUrl,
+      likeUnikey: meta?.likeUnikey,
+      likeCurkey: meta?.likeCurkey,
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // Login helpers
+  // ──────────────────────────────────────────────
+
+  async loginWithCookieString(cookieStr: string): Promise<void> {
+    const parsed: Record<string, string> = {};
+    for (const part of cookieStr.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx === -1) continue;
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      parsed[k] = v;
+    }
+    const required = ['uin', 'p_skey', 'skey', 'p_uin'];
+    if (!required.some(k => k in parsed)) {
+      throw new Error('Cookie 字符串缺少关键字段（uin/p_skey/skey/p_uin）');
+    }
+
+    this.jar = new CookieJar();
+    (this.http.defaults as Record<string, unknown>).jar = this.jar;
+    this.cookies = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      this.cookies[k] = v;
+    }
+    this._syncJarFromMap();
+
+    let uin = parsed['uin'] ?? parsed['p_uin'] ?? '';
+    if (/^[oO]/.test(uin)) uin = uin.slice(1);
+    this.qqNumber = uin || null;
+    if (!this.qqNumber) throw new Error('无法从 Cookie 中解析 QQ 号');
+
+    try {
+      const resp = await this.get(`https://user.qzone.qq.com/${this.qqNumber}`);
+      if (resp.status >= 400 && resp.status !== 501) {
+        throw new Error(`Cookie 登录校验失败，HTTP ${resp.status}`);
+      }
+      if (resp.text.includes('ptlogin2.qq.com') && resp.text.toLowerCase().includes('login') && !resp.text.includes(this.qqNumber)) {
+        log('WARNING', 'Cookie 可能已过期，但仍尝试继续');
+      }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.startsWith('Cookie 登录校验失败')) throw e;
+      log('WARNING', `Cookie 登录校验请求失败: ${e}，跳过校验继续`);
+    }
+
+    this.saveCookies();
+    log('INFO', `Cookie 登录成功，QQ号: ${this.qqNumber}`);
+  }
+
+
+  // 
+  // Playwright QR login（真实浏览器扫码）
+  // 
+  async loginWithPlaywright(
+    timeoutSeconds = 300,
+    headless = false,
+  ): Promise<void> {
+    if (this.loggedIn) return;
+
+    log('INFO', 'Playwright QR 登录：启动浏览器...');
+    const pw = await launchPlaywright({ headless, throwOnMissing: true });
+    const browser = pw!.browser;
+    try {
+      const ctx = await browser.newContext({
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        viewport: { width: 400, height: 320 },
+      });
+      const page = await ctx.newPage();
+
+      const xloginUrl =
+        'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=549000912&daid=5&style=40&target=self' +
+        '&s_url=https%3A%2F%2Fqzs.qzone.qq.com%2Fqzone%2Fv5%2Floginsucc.html%3Fpara%3Dizone' +
+        '&pt_3rd_aid=0&hide_title_bar=1&hide_border=1';
+
+      await page.goto(xloginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+
+      // 保存 QR 码图片到磁盘
+      const cacheDir = this.config.cachePath;
+      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+      const absQrPath = path.resolve(this.qrcodePath);
+      await this._saveQrCode(page, absQrPath);
+
+      if (headless) {
+        log('INFO', `请用手机 QQ 扫描二维码文件: ${absQrPath}`);
+        log('INFO', '扫码后请在手机上确认登录，等待自动跳转');
+      } else {
+        log('INFO', `浏览器已打开，请用手机 QQ 扫描屏幕上的二维码（文件: ${absQrPath}）`);
+      }
+
+      // 等待登录成功（页面会经历多级跳转：ptlogin → check_sig → loginsucc → qzone）
+      const deadline = Date.now() + timeoutSeconds * 1000;
+      let loggedIn = false;
+
+      while (Date.now() < deadline) {
+
+        const currentUrl = page.url();
+        // 用 URL 的 pathname+host 来判断，避免 s_url 参数里的 loginsucc/qzone 字样误匹配
+        let parsedHost = '';
+        let parsedPath = '';
+        try {
+          const u = new URL(currentUrl);
+          parsedHost = u.hostname;
+          parsedPath = u.pathname;
+        } catch { /* ignore */ }
+
+        log('DEBUG', `Playwright 当前: ${parsedHost}${parsedPath}`);
+
+        // loginsucc 页面说明身份验证已通过（pathname 中含 loginsucc）
+        if (parsedPath.includes('loginsucc')) {
+          log('INFO', '检测到 loginsucc 页面，等待 Cookie 完全种入...');
+          await page.waitForTimeout(3000);
+          try {
+            await page.goto('https://user.qzone.qq.com/', {
+              waitUntil: 'domcontentloaded',
+              timeout: 15000,
+            });
+          } catch { /* timeout is ok, cookies should be set by now */ }
+          await page.waitForTimeout(2000);
+          loggedIn = true;
+          break;
+        }
+
+        // 如果已经到了 user.qzone.qq.com 主页
+        if (
+          parsedHost.includes('user.qzone.qq.com') &&
+          !parsedHost.includes('ptlogin2')
+        ) {
+          log('INFO', '已到达 QZone 主页');
+          await page.waitForTimeout(3000);
+          loggedIn = true;
+          break;
+        }
+
+        await page.waitForTimeout(2000);
+      }
+
+      if (!loggedIn) {
+        throw new Error(`Playwright 扫码登录超时（${timeoutSeconds} 秒）`);
+      }
+
+      log('INFO', '扫码成功，正在提取 Cookie...');
+
+      // 从浏览器提取所有域的 cookie（确保拿到 p_skey、skey 等关键字段）
+      const browserCookies = await ctx.cookies([
+        'https://qq.com',
+        'https://qzone.qq.com',
+        'https://user.qzone.qq.com',
+        'https://qzs.qzone.qq.com',
+        'https://ptlogin2.qq.com',
+        'https://ssl.ptlogin2.qq.com',
+      ]);
+      log('DEBUG', `提取到 ${browserCookies.length} 个 Cookie: ${browserCookies.map((c: any) => c.name).join(', ')}`);
+
+      this.jar = new CookieJar();
+      (this.http.defaults as Record<string, unknown>).jar = this.jar;
+      this.cookies = {};
+
+      for (const c of browserCookies) {
+        this.cookies[c.name] = c.value;
+      }
+      this._syncJarFromMap();
+
+      const rawUin = this.cookies['uin'] ?? '';
+      this.qqNumber = rawUin.replace(/^[oO]/, '') || null;
+      if (!this.qqNumber) {
+        // 尝试从 p_uin 获取
+        const pUin = this.cookies['p_uin'] ?? '';
+        this.qqNumber = pUin.replace(/^[oO]/, '') || null;
+      }
+      if (!this.qqNumber) throw new Error('登录成功但未获取到 QQ 号');
+
+      this.saveCookies();
+      try { fs.unlinkSync(absQrPath); } catch { /* ignore */ }
+      log('INFO', `Playwright QR 登录成功，QQ号: ${this.qqNumber}`);
+
+      await ctx.close();
+    } finally {
+      await browser.close();
+    }
+  }
+
+  logout(): void {
+    this.qqNumber = null;
+    void this.closePlaywrightFeedSession();
+    this.deleteCookies();
+  }
+
+  /**
+   * 保存 QR 码到文件。优先提取 img.src 直接下载（绕过截图字体渲染问题），
+   * 失败则尝试元素截图，最后回退到整页截图。
+   */
+  private async _saveQrCode(page: any, absQrPath: string): Promise<void> {
+    const selectors = '#qrlogin_img, img[src*="ptqrshow"]';
+
+    // 方案 1: 提取 QR 图片 src 直接下载（最可靠）
+    try {
+      const qrImg = page.locator(selectors).first();
+      await qrImg.waitFor({ state: 'visible', timeout: 15000 });
+      const src: string = await qrImg.getAttribute('src', { timeout: 5000 });
+      if (src && (src.startsWith('http') || src.startsWith('//'))) {
+        const imgUrl = src.startsWith('//') ? `https:${src}` : src;
+        const resp = await fetch(imgUrl, { signal: AbortSignal.timeout(10000) });
+        if (resp.ok) {
+          const buf = Buffer.from(await resp.arrayBuffer());
+          fs.writeFileSync(absQrPath, buf);
+          log('INFO', `QR 码已保存到: ${absQrPath}（直接下载）`);
+          return;
+        }
+      }
+    } catch { /* fall through */ }
+
+    // 方案 2: 元素截图
+    try {
+      const qrImg = page.locator(selectors).first();
+      const isVisible = await qrImg.isVisible().catch(() => false);
+      if (isVisible) {
+        await qrImg.screenshot({ path: absQrPath, timeout: 10000 });
+        log('INFO', `QR 码已保存到: ${absQrPath}（元素截图）`);
+        return;
+      }
+    } catch { /* fall through */ }
+
+    // 方案 3: 整页截图
+    try {
+      await page.screenshot({ path: absQrPath, timeout: 15000 });
+      log('INFO', `QR 码截图已保存到: ${absQrPath}（整页截图）`);
+    } catch {
+      log('WARNING', `QR 码截图全部失败，请手动访问缓存目录: ${path.dirname(absQrPath)}`);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // 静默会话续期（Playwright headless，无需扫码）
+  // ──────────────────────────────────────────────
+  private lastRefreshTime = 0;
+
+  /**
+   * 使用 headless Playwright 静默刷新 Cookie。
+   * 注入当前 Cookie → 打开 QZone 页面 → 提取刷新后的 Cookie。
+   * 不弹出登录窗口，不需要扫码。
+   * @returns true=刷新成功 / false=刷新失败（Cookie 可能已过期）
+   */
+  async refreshSession(): Promise<boolean> {
+    if (!this.loggedIn || !this.qqNumber) return false;
+
+    log('INFO', '静默刷新 Cookie（headless Playwright）...');
+    const pw = await launchPlaywright();
+    if (!pw) {
+      log('WARNING', 'refreshSession: Playwright 未安装，跳过静默续期');
+      return false;
+    }
+    let browser: any = pw.browser;
+    try {
+      const ctx = await browser.newContext({
+        userAgent: QzoneClient.UA,
+        viewport: { width: 1280, height: 800 },
+      });
+
+      // 注入当前 cookies
+      const cookieArray: Array<{ name: string; value: string; domain: string; path: string }> = [];
+      for (const [name, value] of Object.entries(this.cookies)) {
+        for (const domain of ['.qq.com', '.qzone.qq.com', '.ptlogin2.qq.com']) {
+          cookieArray.push({ name, value, domain, path: '/' });
+        }
+      }
+      await ctx.addCookies(cookieArray);
+
+      const page = await ctx.newPage();
+
+      // 访问 QZone 主页，触发服务端 Cookie 刷新
+      await page.goto(`https://user.qzone.qq.com/${this.qqNumber}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 20000,
+      });
+      await page.waitForTimeout(3000);
+      try {
+        await page.goto(`https://user.qzone.qq.com/${this.qqNumber}/311`, {
+          waitUntil: 'domcontentloaded',
+          timeout: 15000,
+        });
+        await page.waitForTimeout(2000);
+      } catch { /* timeout ok */ }
+
+      // 检查是否跳到了登录页（Cookie 已失效）
+      const currentUrl = page.url();
+      if (currentUrl.includes('ptlogin2.qq.com') || currentUrl.includes('xui.ptlogin2')) {
+        log('WARNING', 'refreshSession: 被重定向到登录页，Cookie 已真正过期');
+        await ctx.close();
+        await browser.close();
+        return false;
+      }
+
+      // 提取刷新后的 cookies
+      const browserCookies = await ctx.cookies([
+        'https://qq.com',
+        'https://qzone.qq.com',
+        'https://user.qzone.qq.com',
+        'https://qzs.qzone.qq.com',
+        'https://ptlogin2.qq.com',
+        'https://ssl.ptlogin2.qq.com',
+      ]);
+
+      // 合并新 cookies（保留旧的，覆盖有新值的）
+      let updated = 0;
+      for (const c of browserCookies) {
+        if (c.value && c.value !== this.cookies[c.name]) {
+          updated++;
+        }
+        if (c.value) this.cookies[c.name] = c.value;
+      }
+
+      await ctx.close();
+      await browser.close();
+      browser = null;
+
+      // 重新同步到 jar
+      this.jar = new CookieJar();
+      (this.http.defaults as Record<string, unknown>).jar = this.jar;
+      this._syncJarFromMap();
+
+      this.saveCookies();
+      this.lastRefreshTime = Date.now();
+      this.resetApiCaches();
+
+      const hasPskey = !!this.cookies['p_skey'];
+      const hasSkey = !!this.cookies['skey'];
+      log('INFO', `静默续期完成: ${updated} cookie(s) 更新, p_skey=${hasPskey ? '✓' : '✗'}, skey=${hasSkey ? '✓' : '✗'}`);
+
+      // 仅在续期完全成功（p_skey + skey 均存在）时才写回 .env，防止覆盖用户手动提供的有效 cookie
+      if (hasPskey && hasSkey) {
+        this.syncCookieToEnvFile();
+      } else {
+        log('WARNING', 'refreshSession: p_skey 缺失，不覆盖 .env（避免丢失用户提供的 cookie）');
+      }
+      return hasPskey && hasSkey;
+    } catch (exc) {
+      log('WARNING', `refreshSession 失败: ${exc}`);
+      if (browser) try { await browser.close(); } catch {}
+      return false;
+    }
+  }
+
+  /** 距上次静默刷新的秒数 */
+  get secondsSinceLastRefresh(): number {
+    if (!this.lastRefreshTime) return Infinity;
+    return (Date.now() - this.lastRefreshTime) / 1000;
+  }
+
+  resetApiCaches(): void {
+    this.qzonetokenCache = null;
+    this.qzonetokenCacheTime = 0;
+    this.qzonetokenFailTime = 0;
+    this.playwrightFailTime = 0;
+    this.detailWinningVariant = null;
+    this.detailAllFailTime = 0;
+    this.feeds3Cache.clear();
+    this.feeds3CacheTime.clear();
+    this.feeds3Comments.clear();
+    this.feeds3CommentsFetchedAt.clear();
+    this.feeds3Likes.clear();
+    this.playwrightFeedPosts.clear();
+    this.playwrightFeedDomFallbackUsed = false;
+    this.playwrightFeedNetworkIntercepted = false;
+    this.playwrightFeedInterceptedResponseCount = 0;
+  }
+
+  private async closePlaywrightFeedSession(): Promise<void> {
+    this.playwrightFeedListenerAttached = false;
+    this.playwrightFeedPendingParses.clear();
+    this.playwrightFeedPosts.clear();
+    const context = this.playwrightFeedContext;
+    const browser = this.playwrightFeedBrowser;
+    this.playwrightFeedPage = null;
+    this.playwrightFeedContext = null;
+    this.playwrightFeedBrowser = null;
+    if (context) {
+      try { await context.close(); } catch { /* ignore */ }
+    } else if (browser) {
+      try { await browser.close(); } catch { /* ignore */ }
+    }
+  }
+
+  async closeTransientSessions(): Promise<void> {
+    await this.closePlaywrightFeedSession();
+  }
+
+  private buildPlaywrightCookies(): Array<{ name: string; value: string; domain: string; path: string }> {
+    const cookieArray: Array<{ name: string; value: string; domain: string; path: string }> = [];
+    for (const [name, value] of Object.entries(this.cookies)) {
+      for (const domain of ['.qq.com', '.qzone.qq.com', '.ptlogin2.qq.com']) {
+        cookieArray.push({ name, value, domain, path: '/' });
+      }
+    }
+    return cookieArray;
+  }
+
+  private async syncCookiesFromPlaywrightContext(): Promise<void> {
+    if (!this.playwrightFeedContext) return;
+    const browserCookies = await this.playwrightFeedContext.cookies([
+      'https://qq.com',
+      'https://qzone.qq.com',
+      'https://user.qzone.qq.com',
+      'https://qzs.qzone.qq.com',
+      'https://ptlogin2.qq.com',
+      'https://ssl.ptlogin2.qq.com',
+    ]);
+    let updated = false;
+    for (const cookie of browserCookies) {
+      if (!cookie.value) continue;
+      if (this.cookies[cookie.name] !== cookie.value) updated = true;
+      this.cookies[cookie.name] = cookie.value;
+    }
+    if (updated) {
+      this.jar = new CookieJar();
+      (this.http.defaults as Record<string, unknown>).jar = this.jar;
+      this._syncJarFromMap();
+      this.saveCookies();
+    }
+  }
+
+  private isUsefulPlaywrightFeedItem(item: Record<string, unknown>): boolean {
+    const tid = String(item['tid'] ?? item['cellid'] ?? '').trim();
+    const uin = String(item['uin'] ?? item['opuin'] ?? '').trim();
+    if (!tid || !uin) return false;
+    const appid = Number(item['appid'] ?? 0);
+    return appid !== 217;
+  }
+
+  private playwrightFeedCompleteness(item: Record<string, unknown>): number {
+    let score = 0;
+    if (String(item['tid'] ?? item['cellid'] ?? '').trim()) score += 4;
+    if (String(item['uin'] ?? item['opuin'] ?? '').trim()) score += 4;
+    if (String(item['likeUnikey'] ?? '').trim()) score += 4;
+    if (String(item['likeCurkey'] ?? '').trim()) score += 4;
+    if (String(item['detailUrl'] ?? item['detailurl'] ?? '').trim()) score += 2;
+    if (String(item['nickname'] ?? item['name'] ?? '').trim()) score += 1;
+    if (Number(item['created_time'] ?? item['createTime'] ?? 0) > 0) score += 1;
+    if (Boolean(item['_networkSource'])) score += 3;
+    return score;
+  }
+
+  private mergePlaywrightFeedItem(item: Record<string, unknown>): void {
+    if (!this.isUsefulPlaywrightFeedItem(item)) return;
+    const tid = String(item['tid'] ?? item['cellid'] ?? '').trim();
+    const uin = String(item['uin'] ?? item['opuin'] ?? '').trim();
+    const key = `${uin}:${tid}`;
+    const normalized: Record<string, unknown> = {
+      ...item,
+      uin,
+      tid,
+      _source: 'playwright_feed',
+    };
+    if (!normalized['detailUrl'] && normalized['detailurl']) normalized['detailUrl'] = normalized['detailurl'];
+    if (!normalized['created_time'] && Number(normalized['abstime'] ?? 0) > 0) {
+      normalized['created_time'] = Number(normalized['abstime']);
+    }
+    const current = this.playwrightFeedPosts.get(key);
+    if (!current || this.playwrightFeedCompleteness(normalized) >= this.playwrightFeedCompleteness(current)) {
+      this.playwrightFeedPosts.set(key, normalized);
+    }
+    this.cachePostMetaFromRaw(normalized);
+  }
+
+  private async attachPlaywrightFeedListeners(page: any): Promise<void> {
+    if (this.playwrightFeedListenerAttached) return;
+    this.playwrightFeedListenerAttached = true;
+    page.on('response', (response: any) => {
+      const work = (async () => {
+        try {
+          const url = String(response.url?.() ?? response.url ?? '');
+          if (!/feeds3_html_more|feeds_html_act_all/i.test(url)) return;
+          const text = await response.text();
+          const items = this.parseFeeds3Items(text, undefined, undefined, 120, false);
+          let usefulCount = 0;
+          for (const item of items) {
+            if (!this.isUsefulPlaywrightFeedItem(item)) continue;
+            usefulCount += 1;
+            this.mergePlaywrightFeedItem({ ...item, _networkSource: true });
+          }
+          if (usefulCount > 0) {
+            this.playwrightFeedNetworkIntercepted = true;
+            this.playwrightFeedInterceptedResponseCount += 1;
+            this.mergeFeeds3AncillaryFromHtml(text, Math.floor(Date.now() / 1000), 'playwright_feed');
+            const friends = this.extractFriendsFromFeeds3FromText(text);
+            if (friends.length) this.mergeFriendCache(friends);
+          }
+        } catch {
+          // ignore one-off parse failures from browser responses
+        }
+      })();
+      this.playwrightFeedPendingParses.add(work);
+      void work.finally(() => {
+        this.playwrightFeedPendingParses.delete(work);
+      });
+    });
+  }
+
+  private async ensurePlaywrightFeedSession(): Promise<any | null> {
+    if (!env.instantLikePlaywright || !this.qqNumber) return null;
+    if (this.playwrightFeedPage && !this.playwrightFeedPage.isClosed?.()) return this.playwrightFeedPage;
+    const headless = env.playwrightHeadless ?? true;
+    const pw = await launchPlaywright({ headless, throwOnMissing: false });
+    if (!pw) return null;
+    this.playwrightFeedBrowser = pw.browser;
+    this.playwrightFeedContext = await pw.browser.newContext({
+      userAgent: QzoneClient.UA,
+      viewport: { width: 1280, height: 800 },
+    });
+    await this.playwrightFeedContext.addCookies(this.buildPlaywrightCookies());
+    this.playwrightFeedPage = await this.playwrightFeedContext.newPage();
+    await this.attachPlaywrightFeedListeners(this.playwrightFeedPage);
+    return this.playwrightFeedPage;
+  }
+
+  async getPlaywrightFriendFeedSnapshot(limit = 20): Promise<PlaywrightFeedSnapshot> {
+    this.requireLogin();
+    const page = await this.ensurePlaywrightFeedSession();
+    if (!page || !this.qqNumber) {
+      return {
+        posts: [],
+        networkIntercepted: false,
+        domFallbackUsed: false,
+        interceptedResponseCount: 0,
+        pageUrl: '',
+      };
+    }
+    this.playwrightFeedPosts.clear();
+    this.playwrightFeedDomFallbackUsed = false;
+    this.playwrightFeedNetworkIntercepted = false;
+    this.playwrightFeedInterceptedResponseCount = 0;
+
+    await page.goto(`https://user.qzone.qq.com/${this.qqNumber}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: Math.max(15_000, env.playwrightTimeoutMs),
+    });
+    await page.waitForTimeout(3500);
+    if (this.playwrightFeedPendingParses.size > 0) {
+      await Promise.allSettled([...this.playwrightFeedPendingParses]);
+    }
+
+    if (this.playwrightFeedPosts.size === 0) {
+      const domItems = await page.evaluate(() => {
+        const out: Record<string, unknown>[] = [];
+        const doc = (globalThis as { document?: any }).document;
+        const buttons = Array.from(doc?.querySelectorAll?.('[data-islike]') ?? []);
+        for (const rawButton of buttons) {
+          const element = rawButton as any;
+          let container = element;
+          while (container && !container?.hasAttribute?.('data-tid')) {
+            container = container.parentElement;
+          }
+          const likeUnikey = element.getAttribute('data-unikey') ?? '';
+          const likeCurkey = element.getAttribute('data-curkey') ?? '';
+          const detailUrl = element.getAttribute('data-detailurl') ?? '';
+          const match = (likeUnikey || detailUrl).match(/user\.qzone\.qq\.com\/(\d+)\/mood\/([^/?#]+)/i);
+          const moodUin = match?.[1] ?? '';
+          const moodTid = match?.[2] ?? '';
+          const tid = container?.getAttribute?.('data-tid') ?? moodTid;
+          const uin = container?.getAttribute?.('data-uin') ?? container?.getAttribute?.('data-opuin') ?? moodUin;
+          if (!tid || !uin) continue;
+          const appid = container?.getAttribute?.('data-appid') ?? element.getAttribute('data-appid') ?? '';
+          const typeid = container?.getAttribute?.('data-typeid') ?? element.getAttribute('data-typeid') ?? '';
+          const created = container?.getAttribute?.('data-abstime') ?? container?.getAttribute?.('data-created') ?? '';
+          const nickNode = container?.querySelector?.('.f-nick,[data-clicklog*="nick"],.ui-mr8,.f-name');
+          out.push({
+            tid,
+            uin,
+            appid,
+            typeid,
+            created_time: created ? Number(created) : 0,
+            nickname: (nickNode?.textContent ?? '').trim(),
+            isLiked: element.getAttribute('data-islike') === '1',
+            likeUnikey,
+            likeCurkey,
+            detailUrl,
+            _domSource: true,
+          });
+        }
+        return out;
+      });
+      if (domItems.length > 0) {
+        this.playwrightFeedDomFallbackUsed = true;
+        for (const item of domItems) this.mergePlaywrightFeedItem(item);
+      }
+    }
+
+    await this.syncCookiesFromPlaywrightContext();
+    const posts = [...this.playwrightFeedPosts.values()]
+      .sort((left, right) => Number(right['created_time'] ?? 0) - Number(left['created_time'] ?? 0))
+      .slice(0, Math.max(1, limit));
+    return {
+      posts,
+      networkIntercepted: this.playwrightFeedNetworkIntercepted,
+      domFallbackUsed: this.playwrightFeedDomFallbackUsed,
+      interceptedResponseCount: this.playwrightFeedInterceptedResponseCount,
+      pageUrl: String(page.url?.() ?? ''),
+    };
+  }
+
+  async likeWithPlaywrightContext(item: Record<string, unknown>): Promise<ApiResponse | null> {
+    const page = this.playwrightFeedPage;
+    if (!page || !this.qqNumber) return null;
+    const tid = String(item['tid'] ?? item['cellid'] ?? '').trim();
+    const uin = String(item['uin'] ?? item['opuin'] ?? '').trim();
+    if (!tid || !uin) return null;
+    const targetLikeUnikey = String(item['likeUnikey'] ?? '').trim();
+    const targetLikeCurkey = String(item['likeCurkey'] ?? '').trim();
+    const targetDetailUrl = String(item['detailUrl'] ?? item['detailurl'] ?? '').trim();
+
+    const clickResult = await page.evaluate(({
+      innerTid,
+      innerLikeUnikey,
+      innerLikeCurkey,
+      innerDetailUrl,
+    }: {
+      innerTid: string;
+      innerLikeUnikey: string;
+      innerLikeCurkey: string;
+      innerDetailUrl: string;
+    }) => {
+      const doc = (globalThis as { document?: any }).document;
+      const buttons = Array.from(doc?.querySelectorAll?.('[data-islike]') ?? []);
+      for (const rawButton of buttons) {
+        const button = rawButton as any;
+        const unikey = button.getAttribute('data-unikey') ?? '';
+        const curkey = button.getAttribute('data-curkey') ?? '';
+        const detailUrl = button.getAttribute('data-detailurl') ?? '';
+        const containerTid = button.closest('[data-tid]')?.getAttribute('data-tid') ?? '';
+        const matched = (
+          (innerLikeUnikey && unikey === innerLikeUnikey)
+          || (innerLikeCurkey && curkey === innerLikeCurkey)
+          || (innerDetailUrl && detailUrl === innerDetailUrl)
+          || (
+          unikey.includes(`mood/${innerTid}`)
+          || curkey.includes(innerTid)
+          || detailUrl.includes(innerTid)
+          || containerTid === innerTid
+          )
+        );
+        if (!matched) continue;
+        const before = button.getAttribute('data-islike') ?? '';
+        if (before !== '0') {
+          return { clicked: false, alreadyLiked: before === '1' };
+        }
+        button.click();
+        return { clicked: true, alreadyLiked: false };
+      }
+
+      return { clicked: false, alreadyLiked: false };
+    }, {
+      innerTid: tid,
+      innerLikeUnikey: targetLikeUnikey,
+      innerLikeCurkey: targetLikeCurkey,
+      innerDetailUrl: targetDetailUrl,
+    }) as { clicked?: boolean; alreadyLiked?: boolean };
+    if (clickResult.alreadyLiked) return { code: 0, message: 'playwright already liked', _playwrightClick: true };
+    if (clickResult.clicked) {
+      try {
+        await page.waitForFunction(({
+          innerTid,
+          innerLikeUnikey,
+          innerLikeCurkey,
+          innerDetailUrl,
+        }: {
+          innerTid: string;
+          innerLikeUnikey: string;
+          innerLikeCurkey: string;
+          innerDetailUrl: string;
+        }) => {
+          const doc = (globalThis as { document?: any }).document;
+          const buttons = Array.from(doc?.querySelectorAll?.('[data-islike]') ?? []);
+          for (const rawButton of buttons) {
+            const button = rawButton as any;
+            const unikey = button.getAttribute('data-unikey') ?? '';
+            const curkey = button.getAttribute('data-curkey') ?? '';
+            const detailUrl = button.getAttribute('data-detailurl') ?? '';
+            const containerTid = button.closest('[data-tid]')?.getAttribute('data-tid') ?? '';
+            const matched = (
+              (innerLikeUnikey && unikey === innerLikeUnikey)
+              || (innerLikeCurkey && curkey === innerLikeCurkey)
+              || (innerDetailUrl && detailUrl === innerDetailUrl)
+              || (
+              unikey.includes(`mood/${innerTid}`)
+              || curkey.includes(innerTid)
+              || detailUrl.includes(innerTid)
+              || containerTid === innerTid
+              )
+            );
+            if (matched) return button.getAttribute('data-islike') === '1';
+          }
+          return false;
+        }, {
+          innerTid: tid,
+          innerLikeUnikey: targetLikeUnikey,
+          innerLikeCurkey: targetLikeCurkey,
+          innerDetailUrl: targetDetailUrl,
+        }, { timeout: 2500 });
+        await this.syncCookiesFromPlaywrightContext();
+        return { code: 0, message: 'playwright click ok', _playwrightClick: true };
+      } catch {
+        // Fall through to browser fetch when the click did not visibly change page state.
+      }
+    }
+
+    const appid = Number(item['appid'] ?? 311);
+    const typeid = Number(item['typeid'] ?? 0);
+    const abstime = Number(item['created_time'] ?? item['createTime'] ?? Math.floor(Date.now() / 1000));
+    const unikey = String(item['likeUnikey'] ?? `http://user.qzone.qq.com/${uin}/mood/${tid}`);
+    const curkey = String(item['likeCurkey'] ?? unikey);
+    const gtk = this.getGtk();
+    const payload = await page.evaluate(async (
+      {
+        selfUin,
+        innerUin,
+        innerTid,
+        appid: innerAppid,
+        typeid: innerTypeid,
+        abstime: innerAbstime,
+        unikey: innerUnikey,
+        curkey: innerCurkey,
+        gtk: innerGtk,
+      }: {
+        selfUin: string;
+        innerUin: string;
+        innerTid: string;
+        appid: number;
+        typeid: number;
+        abstime: number;
+        unikey: string;
+        curkey: string;
+        gtk: number;
+      },
+    ) => {
+      const qzreferrer = `https://user.qzone.qq.com/${selfUin}/main`;
+      try {
+        const firstResponse = await fetch(
+          `https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app?g_tk=${innerGtk}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({
+              qzreferrer,
+              opuin: selfUin,
+              unikey: innerUnikey,
+              curkey: innerCurkey,
+              appid: String(innerAppid),
+              typeid: String(innerTypeid),
+              fid: innerTid,
+              from: '1',
+              active: '0',
+              fupdate: '1',
+              abstime: String(innerAbstime),
+              format: 'json',
+            }).toString(),
+            credentials: 'include',
+          },
+        );
+        const first = await firstResponse.json() as Record<string, unknown>;
+        if (Number(first['code'] ?? first['ret'] ?? -1) === 0) return first;
+        const secondResponse = await fetch(
+          `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/like_cgi_likev6?g_tk=${innerGtk}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({
+              opuin: selfUin,
+              ouin: innerUin,
+              fid: innerTid,
+              abstime: String(innerAbstime),
+              appid: String(innerAppid),
+              typeid: String(innerTypeid),
+              key: '',
+              format: 'json',
+              qzreferrer,
+            }).toString(),
+            credentials: 'include',
+          },
+        );
+        const second = await secondResponse.json() as Record<string, unknown>;
+        if (Number(second['code'] ?? second['ret'] ?? -1) === 0) return second;
+        const thirdResponse = await fetch(
+          `https://mobile.qzone.qq.com/like?g_tk=${innerGtk}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({
+              unikey: innerUnikey,
+              curkey: innerUnikey,
+              appid: String(innerAppid),
+              typeid: String(innerTypeid),
+              active: '0',
+              fupdate: '1',
+            }).toString(),
+            credentials: 'include',
+          },
+        );
+        const third = await thirdResponse.json() as Record<string, unknown>;
+        return third;
+      } catch (error) {
+        return {
+          code: -1,
+          message: error instanceof Error ? error.message : String(error),
+        } as Record<string, unknown>;
+      }
+    }, { selfUin: this.qqNumber, innerUin: uin, innerTid: tid, appid, typeid, abstime, unikey, curkey, gtk });
+    if (Number((payload as Record<string, unknown>)['code'] ?? (payload as Record<string, unknown>)['ret'] ?? -1) === 0) {
+      await page.waitForTimeout(700).catch(() => {});
+      await this.syncCookiesFromPlaywrightContext();
+    }
+    return payload as ApiResponse;
+  }
+
+  async verifyLikeInPlaywrightContext(item: Record<string, unknown>): Promise<boolean> {
+    const page = this.playwrightFeedPage;
+    if (!page) return false;
+    const tid = String(item['tid'] ?? item['cellid'] ?? '').trim();
+    if (!tid) return false;
+    const targetLikeUnikey = String(item['likeUnikey'] ?? '').trim();
+    const targetLikeCurkey = String(item['likeCurkey'] ?? '').trim();
+    const targetDetailUrl = String(item['detailUrl'] ?? item['detailurl'] ?? '').trim();
+    try {
+      return await page.evaluate(({
+        innerTid,
+        innerLikeUnikey,
+        innerLikeCurkey,
+        innerDetailUrl,
+      }: {
+        innerTid: string;
+        innerLikeUnikey: string;
+        innerLikeCurkey: string;
+        innerDetailUrl: string;
+      }) => {
+        const doc = (globalThis as { document?: any }).document;
+        const buttons = Array.from(doc?.querySelectorAll?.('[data-islike]') ?? []);
+        for (const rawButton of buttons) {
+          const button = rawButton as any;
+          const unikey = button.getAttribute('data-unikey') ?? '';
+          const curkey = button.getAttribute('data-curkey') ?? '';
+          const detailUrl = button.getAttribute('data-detailurl') ?? '';
+          const containerTid = button.closest('[data-tid]')?.getAttribute('data-tid') ?? '';
+          const matched = (
+            (innerLikeUnikey && unikey === innerLikeUnikey)
+            || (innerLikeCurkey && curkey === innerLikeCurkey)
+            || (innerDetailUrl && detailUrl === innerDetailUrl)
+            || (
+              unikey.includes(`mood/${innerTid}`)
+              || curkey.includes(innerTid)
+              || detailUrl.includes(innerTid)
+              || containerTid === innerTid
+            )
+          );
+          if (matched) {
+            return button.getAttribute('data-islike') === '1';
+          }
+        }
+        return false;
+      }, {
+        innerTid: tid,
+        innerLikeUnikey: targetLikeUnikey,
+        innerLikeCurkey: targetLikeCurkey,
+        innerDetailUrl: targetDetailUrl,
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Session validation
+  // ──────────────────────────────────────────────
+
+  /**
+   * 校验当前 Cookie 是否仍然有效。
+   * 依次尝试多种轻量探针，任一成功即认为有效。
+   * 逻辑：快速探针 → 中量探针 → 重量级探针，early-return。
+   */
+  async validateSession(force = false): Promise<boolean> {
+    if (!this.qqNumber) return false;
+
+    // 方法0: 如果 Cookie 刚经过网络验证不久（<5分钟），跳过探针
+    // force=true 时跳过此优化（用于 loginWithCookieString 后的首次校验）
+    if (!force && this.cookiesLastUsed) {
+      const ageMs = Date.now() - this.cookiesLastUsed.getTime();
+      if (ageMs < 5 * 60 * 1000) {
+        log('DEBUG', `validateSession: cookies fresh (${Math.round(ageMs / 1000)}s ago), skip probe`);
+        return true;
+      }
+    }
+
+    // 方法1: feeds3 首页请求 — 几乎不被限流
+    try {
+      const feeds3Url = `https://user.qzone.qq.com/${this.qqNumber}/311`;
+      const resp = await this.get(feeds3Url, { headers: this.pcHeaders() });
+      // 如果返回了包含用户数据的页面（非登录跳转），则有效
+      if (resp.status === 200 && resp.text.length > 5000 &&
+          !resp.text.includes('ptlogin2.qq.com') && resp.text.includes(this.qqNumber!)) {
+        log('DEBUG', 'validateSession: feeds3 page OK');
+        return true;
+      }
+    } catch { /* try next */ }
+
+    // 方法2: visitor list
+    try {
+      const res = await this.getVisitorList(this.qqNumber);
+      if (res && !res['_empty'] && (res['code'] as number | undefined) !== -3000) {
+        log('DEBUG', 'validateSession: visitor list OK');
+        return true;
+      }
+    } catch { /* try next */ }
+
+    // 方法3: qzonetoken (最慢，如果 Playwright 冷却中会直接跳过)
+    try {
+      const token = await this.getQzonetoken();
+      if (token) {
+        log('DEBUG', 'validateSession: qzonetoken OK');
+        return true;
+      }
+    } catch { /* fail */ }
+
+    log('WARNING', 'validateSession: all probes failed');
+    return false;
+  }
+
+  // ──────────────────────────────────────────────
+  // Playwright: 浏览器内获取说说列表（绕过 API 限流）
+  // ──────────────────────────────────────────────
+
+  /**
+   * 使用 Playwright 打开用户说说页面，拦截 emotion_cgi_msglist_v6 的 XHR 响应。
+   * 浏览器内请求不受 IP 级限流影响。
+   */
+  async getEmotionListViaPlaywright(
+    targetUin: string, pos = 0, num = 20, timeout = 30000,
+  ): Promise<ApiResponse | null> {
+    const now = Date.now() / 1000;
+    if (now - this.playwrightFailTime < this.playwrightCooldown) return null;
+
+    const pw = await launchPlaywright();
+    if (!pw) return null;
+
+    log('INFO', 'Playwright fetching emotion list...');
+    let browser: any = pw.browser;
+    try {
+      const ctx = await browser.newContext({
+        userAgent: QzoneClient.UA,
+        viewport: { width: 1280, height: 800 },
+      });
+
+      // 注入 cookies
+      const cookieArray: any[] = [];
+      for (const [name, value] of Object.entries(this.cookies)) {
+        for (const domain of ['.qq.com', '.qzone.qq.com']) {
+          cookieArray.push({ name, value, domain, path: '/' });
+        }
+      }
+      await ctx.addCookies(cookieArray);
+
+      const page = await ctx.newPage();
+
+      // 拦截 emotion_cgi_msglist_v6 响应
+      let apiResult: ApiResponse | null = null;
+      page.on('response', async (response: any) => {
+        const url = response.url() as string;
+        if (url.includes('emotion_cgi_msglist_v6') && !apiResult) {
+          try {
+            const text = await response.text();
+            const parsed = parseJsonp(text) as ApiResponse;
+            if (parsed && typeof parsed === 'object' && (parsed as any).code === 0) {
+              apiResult = parsed as ApiResponse;
+              log('INFO', `Playwright 拦截到 emotion_cgi_msglist_v6 成功响应`);
+            } else {
+              log('DEBUG', `Playwright emotion_cgi_msglist_v6 code=${(parsed as any)?.code}`);
+            }
+          } catch (e) {
+            log('DEBUG', `Playwright response parse error: ${e}`);
+          }
+        }
+      });
+
+      // 导航到说说页面
+      const shuoshuoUrl = `https://user.qzone.qq.com/${targetUin}/311`;
+      await page.goto(shuoshuoUrl, { waitUntil: 'domcontentloaded', timeout });
+      await page.waitForTimeout(3000);
+
+      // 等待 API 响应被拦截
+      const deadline = Date.now() + 10000;
+      while (!apiResult && Date.now() < deadline) {
+        await page.waitForTimeout(500);
+      }
+
+      await ctx.close();
+      await browser.close();
+      browser = null;
+
+      if (apiResult) {
+        log('INFO', `Playwright 成功获取说说列表`);
+        return apiResult;
+      } else {
+        log('WARNING', 'Playwright 未拦截到有效 API 响应');
+        this.playwrightFailTime = Date.now() / 1000;
+        return null;
+      }
+    } catch (exc) {
+      log('WARNING', `Playwright 获取说说失败: ${exc}`);
+      this.playwrightFailTime = Date.now() / 1000;
+      if (browser) try { await browser.close(); } catch {}
+      return null;
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // qzonetoken
+  // ──────────────────────────────────────────────
+  async getQzonetoken(): Promise<string | null> {
+    this.requireLogin();
+    const now = Date.now() / 1000;
+
+    if (this.qzonetokenCache && now - this.qzonetokenCacheTime < this.qzonetokenTtl) {
+      return this.qzonetokenCache;
+    }
+    if (now - this.qzonetokenFailTime < this.qzonetokenFailTtl) {
+      return null;
+    }
+
+    const appendParams = (url: string, params: Record<string, string>): string => {
+      const u = new URL(url);
+      for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+      return u.toString();
+    };
+
+    const urls = [
+      'https://qzs.qzone.qq.com/qzone/v5/loginsucc.html?para=izone',
+      'https://qzs.qzone.qq.com/qzone/v5/loginsucc.html',
+      `https://user.qzone.qq.com/${this.qqNumber}`,
+      `https://user.qzone.qq.com/${this.qqNumber}/main`,
+    ];
+    const patterns = [
+      /g_qzonetoken\s*=\s*\(function\(\)\{[\s\S]*?return\s*['"]([^'"]+)['"]/,
+      /g_qzonetoken\s*=\s*['"]([^'"]+)['"]/,
+      /"g_qzonetoken"\s*:\s*"([^"]+)"/,
+      /qzonetoken"\s*:\s*"([^"]+)"/,
+      /[?&]qzonetoken=([A-Za-z0-9]+)/,
+    ];
+    const iframePattern = /id="QM_Feeds_Iframe"[^>]*?src="([^"]+)"/i;
+
+    for (const url of urls) {
+      try {
+        const resp = await this.get(url, { headers: this.pcHeaders() });
+        const html = resp.text;
+        for (const pat of patterns) {
+          const m = html.match(pat);
+          if (m?.[1]) {
+            const token = m[1].trim();
+            if (token) {
+              this.qzonetokenCache = token;
+              this.qzonetokenCacheTime = Date.now() / 1000;
+              return token;
+            }
+          }
+        }
+        const iframeMatch = html.match(iframePattern);
+        if (iframeMatch) {
+          let iframeSrc = htmlUnescape(iframeMatch[1]!);
+          if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
+          iframeSrc = appendParams(iframeSrc, { g_tk: String(this.getGtk()) });
+          try {
+            const iResp = await this.get(iframeSrc, {
+              headers: this.pcHeaders(`https://user.qzone.qq.com/${this.qqNumber}/main`),
+            });
+            for (const pat of patterns) {
+              const m = iResp.text.match(pat);
+              if (m?.[1]) {
+                const token = m[1].trim();
+                if (token) {
+                  this.qzonetokenCache = token;
+                  this.qzonetokenCacheTime = Date.now() / 1000;
+                  return token;
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* continue */ }
+    }
+
+    // NOTE: 不再使用 Playwright 兜底提取 qzonetoken。
+    // qzonetoken 在所有 API 调用中均为可选参数；弹出浏览器的 UX 代价远大于收益。
+    // Playwright 仅保留用于登录流程 (loginWithPlaywright)。
+
+    this.qzonetokenFailTime = Date.now() / 1000;
+    log('DEBUG', `qzonetoken HTTP 提取失败，${this.qzonetokenFailTtl}s 内不再重试（不触发浏览器）`);
+    return null;
+  }
+
+  private async getQzonetokenPlaywright(): Promise<string | null> {
+    const { Worker } = await import('node:worker_threads');
+    const timeoutMs = env.playwrightTimeoutMs;
+    const channel = env.playwrightChannel;
+    const executable = env.playwrightExecutable;
+    const targetUrl = `https://user.qzone.qq.com/${this.qqNumber}/main`;
+    const cookies = Object.entries(this.cookies).map(([name, value]) => ({
+      name, value, domain: '.qq.com', path: '/',
+    }));
+
+    const workerCode = `
+      const { workerData, parentPort } = require('worker_threads');
+      const { execSync } = require('child_process');
+      async function run() {
+        try {
+          const { chromium } = require('playwright');
+          const launchOpts = { headless: true };
+          if (workerData.executable) launchOpts.executablePath = workerData.executable;
+          else if (workerData.channel) launchOpts.channel = workerData.channel;
+          const browser = await chromium.launch(launchOpts);
+          const ctx = await browser.newContext();
+          await ctx.addCookies(workerData.cookies);
+          const page = await ctx.newPage();
+          await page.goto(workerData.targetUrl, { waitUntil: 'domcontentloaded', timeout: workerData.timeoutMs });
+          await new Promise(r => setTimeout(r, 3000));
+          const token = await page.evaluate(() => {
+            try {
+              if (window.g_qzonetoken) {
+                const g = window.g_qzonetoken;
+                if (typeof g === 'function') return g();
+                if (typeof g === 'string') return g;
+              }
+              const html = document.documentElement.innerHTML;
+              const m = html.match(/g_qzonetoken\\s*=\\s*(?:function\\(\\)\\s*{\\s*return\\s*)?['"]([^'"]+)['"]/);
+              if (m) return m[1];
+            } catch(e) {}
+            return null;
+          });
+          await ctx.close();
+          await browser.close();
+          parentPort.postMessage({ token });
+        } catch(e) {
+          parentPort.postMessage({ error: String(e) });
+        }
+      }
+      run();
+    `;
+
+    return new Promise(resolve => {
+      const w = new Worker(workerCode, {
+        eval: true,
+        workerData: { cookies, targetUrl, timeoutMs, channel, executable },
+      });
+      const timer = setTimeout(() => { w.terminate(); resolve(null); }, 60000);
+      w.on('message', (msg: { token?: string; error?: string }) => {
+        clearTimeout(timer);
+        resolve(typeof msg.token === 'string' ? msg.token.trim() || null : null);
+      });
+      w.on('error', () => { clearTimeout(timer); resolve(null); });
+    });
+  }
+
+  // ──────────────────────────────────────────────
+  // API 有效性判断
+  // ──────────────────────────────────────────────
+  private isValidApiResponse(payload: ApiResponse): boolean {
+    if (payload['_empty']) return false;
+    if ((payload['http_status'] as number | undefined) != null && (payload['http_status'] as number) >= 400) return false;
+    const code = payload['code'] as number | undefined;
+    if (code !== undefined && code !== 0) return false;
+    return true;
+  }
+
+  // ──────────────────────────────────────────────
+  // feeds3 / ic2 JSONP → 可解析文本（供 parseFeeds3Items、hasMoreFeeds 检测）
+  // ──────────────────────────────────────────────
+  /** 将 ic2 返回的 JSONP 解出 data.data[].html 并拼到原文后，结构与 fetchFeeds3Html 一致 */
+  private decodeJsonpFeedsHtmlPayload(respText: string): string {
+    try {
+      const parsed = parseJsonp(respText) as Record<string, unknown> | undefined;
+      const dataArr = parsed?.data && typeof parsed.data === 'object' && Array.isArray((parsed.data as Record<string, unknown>).data)
+        ? (parsed.data as Record<string, unknown>).data as Array<Record<string, unknown>>
+        : null;
+      if (dataArr) {
+        const unescapeHtml = (s: string) => s.replace(/\\x22/g, '"').replace(/\\x3C/g, '<').replace(/\\\//g, '/');
+        const htmlPart = dataArr
+          .map((item) => unescapeHtml(String(item.html ?? '')))
+          .join('');
+        if (dataArr.length === 0) {
+          log('DEBUG', 'feeds3 jsonp: data.data is empty (server returned no feed items, may be 风控 or scope)');
+        } else {
+          log('DEBUG', `feeds3 jsonp: extracted html from ${dataArr.length} data.data items, combined length=${htmlPart.length}`);
+        }
+        return respText + '\n<!--FEEDS_HTML-->\n' + htmlPart;
+      }
+    } catch { /* fall through */ }
+    return respText.replace(/\\x22/g, '"').replace(/\\x3C/g, '<').replace(/\\\//g, '/');
+  }
+
+  private buildFeeds3FailureResponse(
+    payload: ApiResponse,
+    extras: Record<string, unknown>,
+  ): ApiResponse {
+    return {
+      ...payload,
+      code: Number(payload.code ?? -1),
+      message: this.describeApiFailure(payload) || String(payload.message ?? payload.msg ?? 'feeds3 request failed'),
+      _source: 'feeds3',
+      _failure_kind: this.getApiFailureKind(payload),
+      ...extras,
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // feeds3 缓存
+  // ──────────────────────────────────────────────
+  private async fetchFeeds3Html(
+    uin: string,
+    forceRefresh = false,
+    scope = 0,
+    count = 0,
+    externparam = '',
+    uinlist?: string,
+    filter = 'all',
+    applist = 'all',
+  ): Promise<string> {
+    // externparam 翻页时需要不同的缓存 key；uinlist 指定「只看某用户」时也要区分
+    const cacheKey = externparam
+      ? `${uin}_${scope}_page_${externparam.substring(0, 30)}`
+      : uinlist
+        ? `${uin}_${scope}_${count}_ul_${uinlist}`
+        : `${uin}_${scope}_${count}_f${filter}`;
+    const now = Date.now() / 1000;
+    if (!forceRefresh && this.feeds3Cache.has(cacheKey)) {
+      if (now - (this.feeds3CacheTime.get(cacheKey) ?? 0) < this.feeds3CacheTtl) {
+        return this.feeds3Cache.get(cacheKey)!;
+      }
+    }
+
+    // 从 externparam（翻页 cursor）里同步 pagenum 和 basetime → begintime
+    // 浏览器请求结构：pagenum 在 URL 顶层 + externparam 里各出现一次，缺一不可
+    const epBasetime = externparam ? (new URLSearchParams(externparam).get('basetime') ?? '') : '';
+    const epPagenum  = externparam ? (new URLSearchParams(externparam).get('pagenum')  ?? '1') : '1';
+
+    const params = new URLSearchParams({
+      uin,
+      scope: String(scope),
+      view: '1',
+      daylist: '',
+      uinlist: uinlist ?? '',
+      gid: '',
+      flag: '1',
+      filter,
+      applist,
+      refresh: externparam ? '0' : '1',   // 首页 refresh=1，续页 refresh=0
+      aisortEndTime: '0',
+      aisortOffset: '0',
+      getAisort: '0',
+      aisortBeginTime: '0',
+      pagenum: epPagenum,                  // 顶层 pagenum 与 externparam 里保持一致
+      firstGetGroup: '0',
+      icServerTime: '0',
+      mixnocache: '0',
+      scene: '0',
+      begintime: epBasetime,               // = externparam 里的 basetime
+      dayspac: '5',                        // 往回查 5 天
+      sidomain: 'qzonestyle.gtimg.cn',
+      useutf8: '1',
+      outputhtmlfeed: '1',                 // 强制 HTML feed 格式，确保 feed_data 元素存在
+      rd: String(Math.random()),
+      usertime: String(Date.now()),
+      windowId: String(Math.random()),     // 与浏览器抓包一致
+      g_tk: String(this.getGtk()),
+      format: 'json',
+    });
+    if (count > 0) params.set('count', String(count));
+    if (externparam) params.set('externparam', externparam);
+
+    const url =
+      `https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more?${params.toString()}`;
+    const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+    log('DEBUG', `feeds3 raw response length=${resp.text.length}, status=${resp.status}`);
+    const businessFailure = this.extractFeeds3BusinessFailure(resp.text);
+    if (businessFailure) {
+      this.lastFeeds3BusinessFailure = businessFailure;
+      throw new Feeds3BusinessError(businessFailure);
+    }
+    this.lastFeeds3BusinessFailure = null;
+    const text = this.decodeJsonpFeedsHtmlPayload(resp.text);
+    log('DEBUG', `feeds3 decoded text length=${text.length}`);
+    // Dump to file for debug (与 dumpDebugPayload 一致：cachePath/debug)
+    if (env.debugDump) {
+      try {
+        const debugDir = path.join(this.config.cachePath, 'debug');
+        fs.mkdirSync(debugDir, { recursive: true });
+        const stablePath = path.join(debugDir, `feeds3_${uin}_${scope}.html`);
+        const snapshotPath = path.join(debugDir, `feeds3_${uin}_${scope}_${Date.now()}.html`);
+        fs.writeFileSync(stablePath, text, 'utf8');
+        fs.writeFileSync(snapshotPath, text, 'utf8');
+        log('DEBUG', `feeds3 dumped to ${stablePath} and ${snapshotPath}`);
+      } catch {}
+    }
+    // LRU: delete-then-set 使 Map 保持按最近访问排序（最旧在前）
+    this.feeds3Cache.delete(cacheKey);
+    this.feeds3Cache.set(cacheKey, text);
+    this.feeds3CacheTime.delete(cacheKey);
+    this.feeds3CacheTime.set(cacheKey, now);
+
+    // O(1) 逐出：Map 迭代器按插入序，第一个即最旧
+    while (this.feeds3Cache.size > 50) {
+      const oldest = this.feeds3Cache.keys().next().value as string;
+      this.feeds3Cache.delete(oldest);
+      this.feeds3CacheTime.delete(oldest);
+    }
+    return text;
+  }
+
+  /**
+   * ic2 `feeds_html_act_all`：浏览器「全部动态」类分页（start/count），与 feeds3_html_more / get_emotion_list 不同链路。
+   *
+   * **语义（与抓包一致）**：动态流归属由 **`hostuin`** 决定（服务端在 Cookie 权限允许时返回该号动态）；URL 里的 **`uin`** 多为 **页面/请求语境**（例如在谁的空间页里拉 ic2），**不**表示「条目作者 = uin」。
+   * - `hostuin` **省略**时桥接默认用 `this.qqNumber`，即与当前登录号一致。
+   * - `hostuin` **显式传他人**时（如好友），实机可返回 **该 hostuin 的说说**（与浏览器 `uin=空间页&hostuin=主人` 抓包一致），**不能**用「只看 uin」推断作者。
+   * 若仅需稳定拉「某 QQ 本人主页说说时间线」，仍优先 `getEmotionList` / feeds3（与 `start/count` 分页语义不同）。
+   *
+   * @param targetUin 请求参数 `uin`（页面语境）
+   * @param opts.hostUin 请求参数 `hostuin`；默认 `this.qqNumber`
+   */
+  async getFeedsHtmlActAll(
+    targetUin: string,
+    opts?: {
+      hostUin?: string;
+      start?: number;
+      count?: number;
+      scope?: number;
+      filter?: string;
+      flag?: string;
+      refresh?: string;
+      firstGetGroup?: string;
+      mixnocache?: string;
+      scene?: string;
+      refer?: string;
+      sidomain?: string;
+      useutf8?: string;
+      outputhtmlfeed?: string;
+      begintime?: string;
+      icServerTime?: string;
+      includeRawSnippet?: boolean;
+    },
+  ): Promise<ApiResponse> {
+    this.requireLogin();
+    const uin = String(targetUin ?? '').trim();
+    if (!uin) {
+      return { code: -1, message: '缺少 uin', msglist: [], has_more: false, _page_info: { source: 'feeds_html_act_all', error: true } };
+    }
+    const hostUin = String(opts?.hostUin ?? this.qqNumber ?? '').trim();
+    if (!hostUin) {
+      return { code: -1, message: '未登录或缺少 hostuin', msglist: [], has_more: false, _page_info: { source: 'feeds_html_act_all', error: true } };
+    }
+    const start = Math.max(0, Math.floor(opts?.start ?? 0));
+    const count = Math.max(1, Math.min(50, Math.floor(opts?.count ?? 10)));
+    const scope = opts?.scope != null ? Math.floor(opts.scope) : 0;
+    const filter = opts?.filter ?? 'all';
+    const flag = opts?.flag ?? '1';
+    const refresh = opts?.refresh ?? '0';
+    const firstGetGroup = opts?.firstGetGroup ?? '0';
+    const mixnocache = opts?.mixnocache ?? '0';
+    const scene = opts?.scene ?? '0';
+    const refer = opts?.refer ?? '2';
+    const sidomain = opts?.sidomain ?? 'qzonestyle.gtimg.cn';
+    const useutf8 = opts?.useutf8 ?? '1';
+    const outputhtmlfeed = opts?.outputhtmlfeed ?? '1';
+
+    const params = new URLSearchParams();
+    params.set('uin', uin);
+    params.set('hostuin', hostUin);
+    params.set('scope', String(scope));
+    params.set('filter', filter);
+    params.set('flag', flag);
+    params.set('refresh', refresh);
+    params.set('firstGetGroup', firstGetGroup);
+    params.set('mixnocache', mixnocache);
+    params.set('scene', scene);
+    params.set('start', String(start));
+    params.set('count', String(count));
+    params.set('sidomain', sidomain);
+    params.set('useutf8', useutf8);
+    params.set('outputhtmlfeed', outputhtmlfeed);
+    params.set('refer', refer);
+    params.set('r', String(Math.random()));
+    params.set('g_tk', String(this.getGtk()));
+    const bt = opts?.begintime?.trim();
+    if (bt && bt !== 'undefined') params.set('begintime', bt);
+    const icst = opts?.icServerTime?.trim();
+    if (icst) params.set('icServerTime', icst);
+
+    const url =
+      `https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds_html_act_all?${params.toString()}`;
+    try {
+      const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+      log('DEBUG', `feeds_html_act_all raw len=${resp.text.length} status=${resp.status}`);
+      if (resp.status >= 400) {
+        return {
+          code: -1,
+          message: `HTTP ${resp.status}`,
+          msglist: [],
+          has_more: false,
+          http_status: resp.status,
+          _page_info: { source: 'feeds_html_act_all', start, count, uin, hostuin: hostUin },
+        };
+      }
+      const text = this.decodeJsonpFeedsHtmlPayload(resp.text);
+      const excluded = new Set(['217']);
+      const rawList = this.parseFeeds3Items(text, undefined, undefined, Math.max(count * 4, 80), false);
+      const filtered = rawList.filter((m) => !excluded.has(String(m['appid'] ?? '')));
+      /** 单次返回条数与请求 count 对齐（解析器偶会多吐 1 条） */
+      const beforeCap = filtered.length;
+      const msglist = filtered.slice(0, count);
+      for (const item of msglist) this.cachePostMetaFromRaw(item);
+
+      // 与 feeds3_html_more 一致：把本页 HTML 内嵌评论区并入全局桶，供 getCommentsBestEffort 命中
+      // （否则仅通过 act_feed 看到的帖，get_comments 永远走 feeds3_more 首屏，会漏评）
+      try {
+        this.mergeFeeds3AncillaryFromHtml(text, Math.floor(Date.now() / 1000), 'feeds_html_act_all');
+      } catch (e) {
+        log('WARN', `feeds_html_act_all: parseFeeds3Comments failed: ${e}`);
+      }
+
+      const explicitNoMore = /hasMoreFeeds\s*:\s*false/.test(text);
+      const explicitMore = /hasMoreFeeds\s*:\s*true/.test(text);
+      const has_more = explicitNoMore
+        ? false
+        : explicitMore
+          ? true
+          : beforeCap >= count;
+      const next_start = has_more ? start + count : start;
+
+      const pageInfo: Record<string, unknown> = {
+        source: 'feeds_html_act_all',
+        start,
+        count,
+        returned: msglist.length,
+        parsed_before_cap: beforeCap,
+        /** URL 参数：页面/语境 */
+        request_uin: uin,
+        /** 实际动态所属（与返回条目作者一致） */
+        feed_owner_uin: hostUin,
+        hostuin: hostUin,
+        scope,
+        pagination: 'start_count' as const,
+      };
+      if (uin !== hostUin) {
+        pageInfo.note =
+          'uin 为页面/请求语境，hostuin 为动态流主人（与浏览器抓包一致）。与 get_emotion_list 的 offset 分页不同，勿混用续翻。';
+      }
+
+      const out: ApiResponse = {
+        code: 0,
+        message: 'ok',
+        msglist,
+        has_more,
+        next_start,
+        _page_info: pageInfo,
+      };
+      if (opts?.includeRawSnippet) {
+        out._raw_snippet = resp.text.slice(0, 4000);
+      }
+      return out;
+    } catch (exc) {
+      log('ERROR', `feeds_html_act_all failed: ${exc}`);
+      return {
+        code: -1,
+        message: String(exc),
+        msglist: [],
+        has_more: false,
+        _page_info: { source: 'feeds_html_act_all', start, count, uin, hostuin: hostUin, error: true },
+      };
+    }
+  }
+
+  parseFeeds3Items(
+    text: string,
+    filterUin?: string,
+    filterAppid?: string,
+    maxItems = 50,
+    skipFeedData = false,
+  ): Record<string, unknown>[] {
+    return _parseFeeds3Items(text, filterUin, filterAppid, maxItems, skipFeedData);
+  }
+
+  // ──────────────────────────────────────────────
+  // Emotion list（仅 feeds3，PC/mobile 接口已移除）
+  // ──────────────────────────────────────────────
+  async getEmotionList(
+    uin?: string, pos = 0, num = 50, _ftype = 0, _sort = 0, _replynum = 10, maxPages = 15, cursor?: string,
+  ): Promise<ApiResponse> {
+    this.requireLogin();
+    const targetUin = uin ?? this.qqNumber!;
+    return this.getEmotionListViaFeeds3(targetUin, num, pos, maxPages, cursor ?? '');
+  }
+
+  private async getEmotionListViaFeeds3(uin: string, num = 50, pos = 0, maxPages = 15, initialCursor = ''): Promise<ApiResponse> {
+    try {
+      /** 与 getFriendFeeds 一致：个人流里常混入 appid=217「点赞记录」等，非用户发的说说 */
+      const excludedEmotionAppids = new Set(['217']);
+      const dropEmotionNoise = (items: Record<string, unknown>[]): Record<string, unknown>[] =>
+        items.filter((m) => !excludedEmotionAppids.has(String(m['appid'] ?? '')));
+
+      const isOwn = uin === this.qqNumber;
+      let text = '';
+      let msglist: Record<string, unknown>[] = [];
+      let usedScope = 1;
+      /** 是否用 scope=0 + uinlist=目标用户 拉取 */
+      let useUinlist = false;
+      /** 是否用「好友动态流 scope=0 无 uinlist + 按 uin 过滤」拉取（与 getFriendFeeds 同款请求，唯一稳定有数据的路径） */
+      let useFilterFromStream = false;
+
+      const ic = initialCursor.trim();
+      let cursorWorked = false;
+      if (ic) {
+        if (isOwn) {
+          log('DEBUG', `feeds3 continuation: cursor len=${ic.length} own uin=${uin}`);
+          text = await this.fetchFeeds3Html(uin, true, 1, 50, ic);
+          msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+        } else {
+          log('DEBUG', `feeds3 continuation: cursor len=${ic.length} target uin=${uin}`);
+          text = await this.fetchFeeds3Html(uin, true, 1, 50, ic);
+          msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+          if (msglist.length === 0) {
+            text = await this.fetchFeeds3Html(this.qqNumber!, false, 0, 20, ic, undefined, 'all', 'all');
+            const friends0 = this.extractFriendsFromFeeds3FromText(text);
+            if (friends0.length) this.mergeFriendCache(friends0);
+            msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num, false));
+            if (msglist.length > 0) {
+              usedScope = 0;
+              useFilterFromStream = true;
+            }
+          }
+          if (msglist.length === 0) {
+            text = await this.fetchFeeds3Html(this.qqNumber!, true, 0, 50, ic, uin);
+            const friends1 = this.extractFriendsFromFeeds3FromText(text);
+            if (friends1.length) this.mergeFriendCache(friends1);
+            msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+            if (msglist.length > 0) {
+              usedScope = 0;
+              useUinlist = true;
+            }
+          }
+          if (msglist.length === 0) {
+            text = await this.fetchFeeds3Html(uin, true, 0, 50, ic);
+            const friends2 = this.extractFriendsFromFeeds3FromText(text);
+            if (friends2.length) this.mergeFriendCache(friends2);
+            msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+            usedScope = 0;
+          }
+        }
+        cursorWorked = msglist.length > 0;
+        if (!cursorWorked) {
+          log('WARN', 'feeds3 continuation: cursor 未解析到说说，回退到首页策略');
+        }
+      }
+
+      if (!cursorWorked && !isOwn) {
+        // 策略 0（指定用户优先）：用 scope=0 好友说说流（与 getFriendFeeds 同款请求），按 opuin 过滤
+        // 注意：scope=1 的 JS 数组含「活动记录」（如好友点赞），uin 是活动者而非帖子作者，
+        //       会把 bot 自己的帖子误判为目标好友的帖子。scope=0 feed_data 用 opuin 严格校验，更可靠。
+        log('DEBUG', `feeds3 fallback: for friend uin=${uin}, trying scope=0 stream then filter by opuin`);
+        text = await this.fetchFeeds3Html(this.qqNumber!, false, 0, 20, '', undefined, 'all', 'all');
+        const friends = this.extractFriendsFromFeeds3FromText(text);
+        if (friends.length) this.mergeFriendCache(friends);
+        msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num, false));
+        if (msglist.length > 0) {
+          usedScope = 0;
+          useFilterFromStream = true;
+        }
+      } else if (!cursorWorked) {
+        msglist = [];
+      }
+
+      if (!cursorWorked && msglist.length === 0) {
+        // 策略 1：scope=1（个人说说模式）；好友时后端常返回空。过滤 217 后若为空则继续走后续策略
+        log('DEBUG', `feeds3 fallback: trying scope=1 for uin=${uin}`);
+        text = await this.fetchFeeds3Html(uin, true, 1, 50);
+        const scope1 = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+        if (scope1.length > 0) {
+          msglist = scope1;
+          usedScope = 1;
+        }
+      }
+
+      if (!cursorWorked && msglist.length === 0 && !isOwn) {
+        // 策略 2：scope=0 + uinlist=好友（后端可能不支持或返回空）
+        log('DEBUG', `feeds3 fallback: scope=1 empty for friend, trying scope=0 with uinlist=${uin}`);
+        text = await this.fetchFeeds3Html(this.qqNumber!, true, 0, 50, '', uin);
+        const friends = this.extractFriendsFromFeeds3FromText(text);
+        if (friends.length) this.mergeFriendCache(friends);
+        msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+        if (msglist.length > 0) {
+          usedScope = 0;
+          useUinlist = true;
+        }
+      }
+
+      if (!cursorWorked && msglist.length === 0) {
+        // 策略 3：scope=0 无 uinlist，uin=目标，再按 uin 过滤
+        log('DEBUG', 'feeds3 fallback: trying scope=0 without uinlist');
+        text = await this.fetchFeeds3Html(uin, true, 0, 50);
+        const friends = this.extractFriendsFromFeeds3FromText(text);
+        if (friends.length) this.mergeFriendCache(friends);
+        msglist = dropEmotionNoise(this.parseFeeds3Items(text, uin, undefined, pos + num));
+        usedScope = 0;
+      }
+
+      // ── 从 feeds3 HTML 中提取内嵌评论 ──
+      // 所有翻页的 HTML 都会累积到 allHtmlTexts 以合并评论
+      const allHtmlTexts: string[] = [text];
+
+      const seenTids = new Set(msglist.map(m => m['tid'] as string));
+
+      // 如果不够，尝试翻页（最多 maxPages 页，每页约 50 条）
+      const cappedPages = Math.max(1, Math.min(30, maxPages));
+      let remainingPages = cappedPages;
+      if (cappedPages > 3) log('DEBUG', `feeds3 pagination: max_pages=${cappedPages}`);
+      let currentText = text;
+      /** 末页 HTML：用于 hasMoreFeeds / next_cursor（与 getFriendFeeds 语义对齐） */
+      let lastListPageText = text;
+      let emptySkipStreak = 0;
+      const MAX_EMPTY_SKIPS = 10;
+      while (msglist.length < pos + num && remainingPages > 0) {
+        const externparam = this.extractExternparam(currentText);
+        if (!externparam) {
+          log('DEBUG', 'feeds3 pagination: no externparam found, stopping');
+          break;
+        }
+        log('DEBUG', `feeds3 pagination: got ${msglist.length}, need ${pos + num}, scope=${usedScope}`);
+        
+        remainingPages--;
+        currentText = useFilterFromStream
+          ? await this.fetchFeeds3Html(this.qqNumber!, true, 0, 20, externparam, undefined, 'all', 'all')
+          : useUinlist
+            ? await this.fetchFeeds3Html(this.qqNumber!, true, 0, 50, externparam, uin)
+            : await this.fetchFeeds3Html(uin, true, usedScope, 50, externparam);
+        allHtmlTexts.push(currentText);
+        lastListPageText = currentText;
+        const page = dropEmotionNoise(this.parseFeeds3Items(currentText, uin, undefined, 50));
+
+        // 跨页去重
+        let added = 0;
+        for (const item of page) {
+          const tid = item['tid'] as string;
+          if (!seenTids.has(tid)) {
+            seenTids.add(tid);
+            msglist.push(item);
+            added++;
+          }
+        }
+        log('DEBUG', `feeds3 pagination: page returned ${page.length} items, ${added} new after dedup`);
+        if (added === 0) {
+          emptySkipStreak++;
+          if (emptySkipStreak >= MAX_EMPTY_SKIPS) {
+            log('DEBUG', `feeds3 pagination: stopping after ${MAX_EMPTY_SKIPS} pages with no new tids`);
+            break;
+          }
+        } else {
+          emptySkipStreak = 0;
+        }
+      }
+
+      // ── 解析并缓存 feeds3 内嵌评论 ──
+      for (const htmlText of allHtmlTexts) {
+        this.mergeFeeds3AncillaryFromHtml(htmlText, Math.floor(Date.now() / 1000), 'getEmotionListViaFeeds3');
+      }
+
+      // 合并翻页后重新排序（最新在前）
+      msglist.sort((a, b) => {
+        const ta = (a['created_time'] as number) || 0;
+        const tb = (b['created_time'] as number) || 0;
+        return tb - ta;
+      });
+
+      const fullLen = msglist.length;
+      const pages_fetched = 1 + (cappedPages - remainingPages);
+      const hasMoreFeedsOnLastPage = !/hasMoreFeeds\s*:\s*false/.test(lastListPageText);
+      const next_cursor = hasMoreFeedsOnLastPage ? this.extractExternparam(lastListPageText) : '';
+      const truncated_by_max_pages =
+        remainingPages === 0 && Boolean(next_cursor) && hasMoreFeedsOnLastPage;
+
+      if (pos > 0) msglist = msglist.slice(pos);
+      if (msglist.length > num) msglist = msglist.slice(0, num);
+      const returnedLen = msglist.length;
+      const next_pos = pos + returnedLen;
+      const buffer_has_more = next_pos < fullLen;
+      const next_page_uses_cursor =
+        Boolean(next_cursor && hasMoreFeedsOnLastPage && next_pos >= fullLen);
+      const has_more = buffer_has_more || (Boolean(next_cursor) && hasMoreFeedsOnLastPage);
+
+      for (const item of msglist) this.cachePostMetaFromRaw(item);
+      const scopeLabel = useFilterFromStream ? 'scope=0+filter' : useUinlist ? 'scope=0+uinlist' : `scope=${usedScope}`;
+      log('INFO', `feeds3 fallback (${scopeLabel}) 获取到 ${msglist.length} 条说说`);
+      const _page_info = {
+        count: returnedLen,
+        source: 'feeds3',
+        strategy: scopeLabel,
+        host_uin: uin,
+        pos,
+        num,
+        max_pages: cappedPages,
+        pages_fetched,
+        full_fetched_len: fullLen,
+        truncated_by_max_pages,
+        pagination: 'offset' as const,
+        next_page_uses_cursor,
+        hint: next_page_uses_cursor
+          ? '本缓冲已用尽 offset：下一页请传 cursor=本响应 next_cursor（与 OpenClaw qzone_get_posts 的 cursor 同义），pos/offset 用 0'
+          : '下一页请调用 get_emotion_list 并传 pos=next_pos（与 OpenClaw 工具 offset 同义）；若 _page_info.next_page_uses_cursor 为 true 则须用 cursor 续翻',
+      };
+      log(
+        'DEBUG',
+        `getEmotionListViaFeeds3: has_more=${has_more} next_pos=${next_pos} next_cursor_len=${next_cursor.length} truncated_by_max_pages=${truncated_by_max_pages}`,
+      );
+      return {
+        code: 0,
+        message: `ok (feeds3 fallback, ${scopeLabel})`,
+        msglist,
+        _source: 'feeds3',
+        has_more,
+        next_pos,
+        next_cursor,
+        _page_info,
+      };
+    } catch (exc) {
+      log('ERROR', `feeds3 fallback 失败: ${exc}`);
+      const feeds3Failure = this.extractFeeds3BusinessError(exc);
+      return feeds3Failure
+        ? this.buildFeeds3FailureResponse(feeds3Failure, {
+          msglist: [],
+          has_more: false,
+          next_pos: pos,
+          next_cursor: '',
+          _page_info: {
+            count: 0,
+            source: 'feeds3',
+            strategy: '',
+            host_uin: uin,
+            pos,
+            num,
+            max_pages: maxPages,
+            pages_fetched: 0,
+            full_fetched_len: 0,
+            truncated_by_max_pages: false,
+            pagination: 'offset' as const,
+            error: true,
+          },
+        })
+        : {
+          code: -10000,
+          message: String(exc),
+          msglist: [],
+          has_more: false,
+          next_pos: pos,
+          next_cursor: '',
+          _page_info: {
+            count: 0,
+            source: 'feeds3',
+            strategy: '',
+            host_uin: uin,
+            pos,
+            num,
+            max_pages: maxPages,
+            pages_fetched: 0,
+            full_fetched_len: 0,
+            truncated_by_max_pages: false,
+            pagination: 'offset' as const,
+            error: true,
+          },
+        };
+    }
+  }
+
+  /** Extract externparam from feeds3 JSON response for pagination */
+  private extractExternparam(text: string): string {
+    return _extractExternparam(text);
+  }
+
+  /**
+   * 获取好友说说动态（scope=0 filter=all）。
+   * - `fastMode=true`（HTTP 默认由 actions 开启）：**单次** fetchFeeds3Html + 单页解析，快速返回（与 slow 一致保留 HTML 中出现的本人动态；不再排除 loginUin）。
+   * - `fastMode=false`（poller 默认）：多轮翻页直至凑满 num（后台完整性）。
+   */
+  async getFriendFeeds(cursor = '', num = 50, opts?: { fastMode?: boolean }): Promise<ApiResponse> {
+    this.requireLogin();
+    const fastMode = opts?.fastMode === true;
+    // #region agent log
+    const loginUin = this.qqNumber ?? '';
+    try {
+      const payload = { location: 'client.ts:getFriendFeeds', message: 'request params', data: { scope: 0, requestUinMasked: loginUin ? `${loginUin.slice(0, -2)}**` : '', cursorLen: cursor.length, fastMode }, timestamp: Date.now(), hypothesisId: 'H5' as const };
+      fs.appendFileSync(path.join(this.config.cachePath, 'debug.log'), JSON.stringify(payload) + '\n');
+    } catch (_) {}
+    // #endregion
+    const EXCLUDED_APPIDS = new Set(['217']);
+    const want = Math.max(1, Math.min(200, num));
+    const seenTids = new Set<string>();
+    const merged: Record<string, unknown>[] = [];
+    let nextCursor = cursor;
+    const maxRounds = 20;
+
+    const ingestSlowItem = (item: Record<string, unknown>): void => {
+      if (EXCLUDED_APPIDS.has(String(item['appid'] ?? ''))) return;
+      const tid = String(item['tid'] ?? item['cellid'] ?? '');
+      if (tid && seenTids.has(tid)) return;
+      if (tid) seenTids.add(tid);
+      merged.push(item);
+      this.cachePostMetaFromRaw(item);
+    };
+
+    try {
+      if (fastMode) {
+        const text = await this.fetchFeeds3Html(
+          this.qqNumber!, true, 0, 20, cursor,
+          undefined, 'all', 'all',
+        );
+        const friends = this.extractFriendsFromFeeds3FromText(text);
+        if (friends.length) this.mergeFriendCache(friends);
+        this.mergeFeeds3AncillaryFromHtml(text, Math.floor(Date.now() / 1000), 'getFriendFeeds.fast');
+        const hasMoreFeeds = !/hasMoreFeeds\s*:\s*false/.test(text);
+        const pageCursor = hasMoreFeeds ? _extractExternparam(text) : '';
+        const parseCap = Math.min(200, Math.max(80, want * 4));
+        const all = this.parseFeeds3Items(text, undefined, undefined, parseCap, false);
+        for (const item of all) ingestSlowItem(item);
+        const msglist = merged.slice(0, want);
+        const has_more = Boolean(pageCursor && hasMoreFeeds);
+        log('DEBUG', `[feeds3][fast] mode=fast fetch_count=1 items=${msglist.length}`);
+        log(
+          'DEBUG',
+          `[feeds3][fast] has_more=${has_more} next_cursor=${pageCursor ? `${pageCursor.slice(0, 120)}${pageCursor.length > 120 ? '…' : ''}` : '(empty)'}`,
+        );
+        log('DEBUG', `getFriendFeeds: fast scope=0 merged ${msglist.length} posts (incl. self if in HTML), next_cursor=${pageCursor || '(end)'}`);
+        return {
+          code: 0,
+          message: 'ok',
+          msglist,
+          next_cursor: pageCursor,
+          has_more,
+          _page_info: { count: msglist.length, source: 'feeds3', fast_mode: true },
+        };
+      }
+
+      for (let round = 0; round < maxRounds && merged.length < want; round++) {
+        const text = await this.fetchFeeds3Html(
+          this.qqNumber!, true, 0, 20, nextCursor,
+          undefined, 'all', 'all',
+        );
+        const friends = this.extractFriendsFromFeeds3FromText(text);
+        if (friends.length) this.mergeFriendCache(friends);
+        this.mergeFeeds3AncillaryFromHtml(text, Math.floor(Date.now() / 1000), `getFriendFeeds.page${round + 1}`);
+
+        const hasMore = !/hasMoreFeeds\s*:\s*false/.test(text);
+        const pageCursor = hasMore ? _extractExternparam(text) : '';
+
+        if (nextCursor && pageCursor === nextCursor) {
+          log('DEBUG', 'getFriendFeeds: cursor unchanged, end of feed');
+          break;
+        }
+        nextCursor = pageCursor;
+
+        const all = this.parseFeeds3Items(text, undefined, undefined, want - merged.length, false);
+        for (const item of all) ingestSlowItem(item);
+        log('DEBUG', `getFriendFeeds: round ${round + 1} got ${all.length} raw → ${merged.length} merged, hasMore=${hasMore}`);
+
+        if (!hasMore || merged.length >= want) break;
+      }
+
+      const msglist = merged.slice(0, want);
+      const has_more = Boolean(nextCursor);
+      // #region agent log
+      const authors = msglist.slice(0, 5).map((m) => ({ uin: m['uin'], opuin: m['opuin'], tid: m['tid'] }));
+      const isSelf = loginUin && authors.some((a) => String(a.uin ?? a.opuin ?? '') === loginUin);
+      try {
+        fs.appendFileSync(path.join(this.config.cachePath, 'debug.log'), JSON.stringify({ location: 'client.ts:getFriendFeeds', message: 'msglist authors', data: { total: msglist.length, authors, loginUinMasked: loginUin ? `${loginUin.slice(0, -2)}**` : '', isAllSelf: isSelf }, timestamp: Date.now(), hypothesisId: 'H5' }) + '\n');
+      } catch (_) {}
+      // #endregion
+      log('DEBUG', `getFriendFeeds: scope=0 total ${msglist.length} posts (excl. activity), next_cursor=${nextCursor || '(end)'}`);
+      return {
+        code: 0,
+        message: 'ok',
+        msglist,
+        next_cursor: nextCursor,
+        has_more,
+        _page_info: { count: msglist.length, source: 'feeds3', fast_mode: false },
+      };
+    } catch (exc) {
+      log('ERROR', `friend feeds 获取失败: ${exc}`);
+      const feeds3Failure = this.extractFeeds3BusinessError(exc);
+      return feeds3Failure
+        ? this.buildFeeds3FailureResponse(feeds3Failure, {
+          msglist: [],
+          next_cursor: '',
+          has_more: false,
+          _page_info: { count: 0, source: 'feeds3', fast_mode: fastMode, error: true },
+        })
+        : {
+          code: -1,
+          message: String(exc),
+          msglist: [],
+          next_cursor: '',
+          has_more: false,
+          _page_info: { count: 0, source: 'feeds3', fast_mode: fastMode },
+        };
+    }
+  }
+
+  /**
+   * 从 feeds3 原始文本中提取好友四元组（opuin/uin/nickname/logimg）及 f-nick HTML 昵称，去重合并，不排除任何人。
+   * 排除自身 UIN 由调用方在 getFriendList 等处处理。
+   */
+  extractFriendsFromFeeds3FromText(text: string): Array<{ uin: string; nickname: string; avatar: string }> {
+    return _extractFriendsFromFeeds3FromText(text, this.qqNumber ?? '');
+  }
+
+  /**
+   * 请求 feeds3 scope=0（好友动态流），提取好友并可选翻页以获取更多历史中的好友。
+   * 不写入缓存，由调用方 mergeFriendCache。
+   */
+  async extractFriendsFromFeeds3(maxPages = 3): Promise<Array<{ uin: string; nickname: string; avatar: string }>> {
+    this.requireLogin();
+    const uin = this.qqNumber!;
+    const all = new Map<string, { uin: string; nickname: string; avatar: string }>();
+
+    let text = await this.fetchFeeds3Html(uin, true, 0, 50);
+    let pageCount = 0;
+    while (pageCount < maxPages) {
+      const batch = this.extractFriendsFromFeeds3FromText(text);
+      for (const f of batch) {
+        if (!all.has(f.uin)) all.set(f.uin, { ...f });
+        else {
+          const cur = all.get(f.uin)!;
+          if (f.nickname) cur.nickname = f.nickname;
+          if (f.avatar) cur.avatar = f.avatar;
+        }
+      }
+      pageCount++;
+      const externparam = this.extractExternparam(text);
+      if (!externparam || pageCount >= maxPages) break;
+      text = await this.fetchFeeds3Html(uin, true, 0, 50, externparam);
+    }
+
+    return Array.from(all.values());
+  }
+
+  async getFeedImages(uin: string, tid: string): Promise<string[]> {
+    this.requireLogin();
+    try {
+      const text = await this.fetchFeeds3Html(uin);
+      const pattern = new RegExp(`data-key="${tid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"([\\s\\S]*?)(?=data-key="|$)`);
+      const m = text.match(pattern);
+      if (!m) return [];
+      const block = htmlUnescape(m[1]!);
+      const urls: string[] = [];
+      for (const im of block.matchAll(/<img[^>]+src="([^"]+)"/gi)) {
+        const src = im[1]!;
+        if (src.includes('qpic.cn') || src.includes('qlogo.cn') || /\.(jpg|jpeg|png|gif|webp)$/.test(src)) {
+          if (!urls.includes(src)) urls.push(src);
+        }
+      }
+      return urls;
+    } catch (exc) {
+      log('ERROR', `feeds3 图片提取失败: ${exc}`);
+      return [];
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // Shuoshuo detail
+  // ──────────────────────────────────────────────
+  async getShuoshuoDetail(uin: string, tid: string): Promise<ApiResponse> {
+    this.requireLogin();
+
+    if (this.routes['detail'] === 'mobile') {
+      const url = `https://mobile.qzone.qq.com/detail?g_tk=${this.getGtk()}&uin=${uin}&cellid=${tid}&format=json`;
+      const resp = await this.get(url, { headers: this.mobileHeaders() });
+      this.dumpDebugPayload('detail_mobile', resp.text);
+      return safeDecodeJsonResponse(resp.data);
+    }
+
+    const now = Date.now() / 1000;
+    const skipPc = this.detailAllFailTime > 0 && now - this.detailAllFailTime < this.detailAllFailTtl;
+    let lastPayload: ApiResponse = {};
+
+    if (!skipPc) {
+      // POST
+      const postUrl = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_getdetailv6?g_tk=${this.getGtk()}`;
+      try {
+        const resp = await this.post(postUrl, {
+          data: new URLSearchParams({ uin, tid, format: 'json', hostuin: this.qqNumber!, qzreferrer: this.getQzreferrer() }),
+          headers: this.pcHeaders(this.getQzreferrer()),
+        });
+        this.dumpDebugPayload('detail_pc_post', resp.text);
+        const payload = safeDecodeJsonResponse(resp.data);
+        if (this.isValidApiResponse(payload)) { this.detailWinningVariant = -1; return payload; }
+        lastPayload = payload;
+      } catch (exc) { log('DEBUG', `Detail POST failed: ${exc}`); }
+
+      // GET 变体（简化版：只保留最有效的 2 个变体）
+      const base = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_getdetailv6?g_tk=${this.getGtk()}&uin=${uin}&tid=${tid}&format=json`;
+      const qzonetoken = await this.getQzonetoken() ?? String(this.getGtk());
+      const variants = [
+        `qzonetoken=${qzonetoken}&hostuin=${this.qqNumber}&qzreferrer=${this.getQzreferrer()}`,  // 完整参数
+        `qzonetoken=${qzonetoken}`,  // 仅 qzonetoken
+      ];
+      for (let index = 0; index < variants.length; index++) {
+        const suffix = variants[index]!;
+        const url = base + '&' + suffix;
+        try {
+          const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+          this.dumpDebugPayload(`detail_pc_${index}`, resp.text);
+          const payload = safeDecodeJsonResponse(resp.data);
+          if (this.isValidApiResponse(payload)) { this.detailWinningVariant = index; return payload; }
+          if (!payload['_empty']) lastPayload = payload;
+        } catch (exc) { log('DEBUG', `Detail GET variant ${index} failed: ${exc}`); }
+      }
+      this.detailAllFailTime = Date.now() / 1000;
+    }
+
+    // Mobile fallback
+    try {
+      const url = `https://mobile.qzone.qq.com/detail?g_tk=${this.getGtk()}&uin=${uin}&cellid=${tid}&format=json`;
+      const resp = await this.get(url, { headers: this.mobileHeaders() });
+      this.dumpDebugPayload('detail_mobile', resp.text);
+      const p = safeDecodeJsonResponse(resp.data);
+      if (this.isValidApiResponse(p)) return p;
+    } catch (exc) { log('DEBUG', `Detail mobile fallback failed: ${exc}`); }
+
+    // emotion_list fallback：扩大条数/翻页，tid 用字符串对齐 cellid
+    try {
+      const elist = await this.getEmotionList(uin, 0, 80, undefined, undefined, undefined, 15);
+      const msglist = Array.isArray(elist['msglist']) ? elist['msglist'] as Record<string, unknown>[] : [];
+      for (const msg of msglist) {
+        if (!this.itemMatchesTid(msg, tid)) continue;
+        return {
+          ...msg,
+          code: 0,
+          data: msg,
+          message: 'success (from list)',
+          _detail_semantic: {
+            source: 'emotion_list_fallback',
+            note:
+              'PC getdetailv6 不可用，正文来自 feeds3 列表项；已镜像到顶层 content/conlist 等字段。',
+          },
+        } as ApiResponse;
+      }
+    } catch { /* ignore */ }
+
+    const actDetail = await this.detailFromActAllMsglist(uin, tid);
+    if (actDetail) return actDetail;
+
+    return lastPayload;
+  }
+
+  // ──────────────────────────────────────────────
+  // Comments
+  // ──────────────────────────────────────────────
+  /** 从评论 API 响应中取评论条数（用于调试日志） */
+  private commentCount(p: ApiResponse): number {
+    if (!p || p['_empty']) return -1;
+    for (const key of ['commentlist', 'comment_list', 'comments', 'data']) {
+      const v = p[key];
+      if (Array.isArray(v)) return v.length;
+      if (v && typeof v === 'object' && Array.isArray((v as Record<string, unknown>)['list'])) return ((v as Record<string, unknown>)['list'] as unknown[]).length;
+    }
+    return -1;
+  }
+
+  private collectCommentListFromResult(res: ApiResponse): Record<string, unknown>[] {
+    for (const key of ['commentlist', 'comment_list', 'comments', 'data']) {
+      const value = res[key];
+      if (Array.isArray(value)) return value as Record<string, unknown>[];
+    }
+    return [];
+  }
+
+  async probeCapabilities(): Promise<CapabilityReport> {
+    const checkedAt = new Date().toISOString();
+    const capabilities: CapabilityStatus[] = [];
+
+    try {
+      const sessionOk = await this.validateSession(true);
+      capabilities.push({
+        name: 'session',
+        available: sessionOk,
+        reliability: 'strict',
+        source: 'official_api',
+        warnings: sessionOk ? [] : ['session validation failed'],
+        reason: sessionOk ? undefined : 'cookie invalid or expired',
+      });
+    } catch (error) {
+      capabilities.push({
+        name: 'session',
+        available: false,
+        reliability: 'strict',
+        source: 'official_api',
+        warnings: [String(error)],
+        reason: 'session validation threw',
+      });
+    }
+
+    const strictPosts = await this.getPostsStrict(this.qqNumber ?? undefined, { maxPages: 1 });
+    capabilities.push({
+      name: 'posts.read',
+      available: strictPosts.ok,
+      reliability: 'strict',
+      source: strictPosts.ok ? strictPosts.source : strictPosts.source,
+      warnings: strictPosts.warnings,
+      reason: strictPosts.ok ? undefined : strictPosts.kind,
+    });
+
+    try {
+      const friendFeeds = await this.getFriendFeeds('', 10, { fastMode: true });
+      capabilities.push({
+        name: 'friend_feeds.read',
+        available: Number(friendFeeds.code ?? -1) === 0,
+        reliability: 'best_effort',
+        source: this.inferSdkSource(friendFeeds._source ?? (friendFeeds._page_info as Record<string, unknown> | undefined)?.source, 'feeds3_html'),
+        warnings: Number(friendFeeds.code ?? -1) === 0 ? [] : [String(friendFeeds.message ?? 'friend feeds unavailable')],
+        reason: Number(friendFeeds.code ?? -1) === 0 ? undefined : String(friendFeeds.message ?? 'unavailable'),
+      });
+    } catch (error) {
+      capabilities.push({
+        name: 'friend_feeds.read',
+        available: false,
+        reliability: 'best_effort',
+        source: 'feeds3_html',
+        warnings: [String(error)],
+        reason: 'friend feeds threw',
+      });
+    }
+
+    try {
+      const playwrightFeed = await this.getPlaywrightFriendFeedSnapshot(10);
+      capabilities.push({
+        name: 'playwright_feed.read',
+        available: playwrightFeed.posts.length > 0,
+        reliability: 'best_effort',
+        source: 'playwright_feed',
+        warnings: playwrightFeed.posts.length > 0
+          ? []
+          : ['playwright feed returned no posts'],
+        reason: playwrightFeed.posts.length > 0
+          ? undefined
+          : `network=${playwrightFeed.networkIntercepted ? '1' : '0'} dom=${playwrightFeed.domFallbackUsed ? '1' : '0'}`,
+      });
+    } catch (error) {
+      capabilities.push({
+        name: 'playwright_feed.read',
+        available: false,
+        reliability: 'best_effort',
+        source: 'playwright_feed',
+        warnings: [String(error)],
+        reason: 'playwright feed threw',
+      });
+    }
+
+    const diagnostic = this.createDiagnosticRef('capability_trace', { checked_at: checkedAt, capabilities });
+    return {
+      ok: capabilities.every((item) => item.available || item.reliability === 'best_effort'),
+      checkedAt,
+      capabilities,
+      diagnostic,
+    };
+  }
+
+  async getPostsStrict(
+    uin?: string,
+    options?: StrictOptions,
+  ): Promise<SdkResult<{ posts: Record<string, unknown>[]; nextCursor?: string; hasMore: boolean }>> {
+    const targetUin = uin ?? this.qqNumber ?? '';
+    try {
+      const res = await this.getEmotionList(
+        targetUin,
+        options?.pos ?? 0,
+        options?.num ?? 50,
+        undefined,
+        undefined,
+        undefined,
+        options?.maxPages ?? 15,
+        options?.cursor,
+      );
+      if (Number(res.code ?? -1) !== 0) {
+        const kind = this.getApiFailureKind(res);
+        return this.sdkFailure(
+          kind,
+          kind === 'rate_limit',
+          'strict',
+          { endpoint: 'getPostsStrict', uin: targetUin, message: String(res.message ?? 'read failed') },
+          this.inferSdkSource(res._source, 'official_api'),
+        );
+      }
+      const posts = Array.isArray(res.msglist) ? res.msglist as Record<string, unknown>[] : [];
+      return this.sdkSuccess(
+        {
+          posts,
+          nextCursor: typeof res.next_cursor === 'string' ? res.next_cursor : undefined,
+          hasMore: Boolean(res.hasMoreFeeds ?? res.has_more ?? res.next_cursor),
+        },
+        this.inferSdkSource(res._source ?? (res._page_info as Record<string, unknown> | undefined)?.source, 'official_api'),
+        'strict',
+      );
+    } catch (error) {
+      return this.classifySdkFailure(error, 'getPostsStrict', targetUin);
+    }
+  }
+
+  async getProfileStrict(uin: string): Promise<SdkResult<Record<string, unknown>>> {
+    try {
+      const res = await this.getUserInfo(uin);
+      if (Number(res.code ?? 0) !== 0) {
+        return this.sdkFailure(
+          this.isAuthFailure(res) ? 'auth' : 'upstream_changed',
+          false,
+          'strict',
+          { endpoint: 'getProfileStrict', uin, message: String(res.message ?? 'profile read failed') },
+          'official_api',
+        );
+      }
+      return this.sdkSuccess(res as Record<string, unknown>, 'official_api', 'strict');
+    } catch (error) {
+      return this.classifySdkFailure(error, 'getProfileStrict', uin);
+    }
+  }
+
+  async publishPostStrict(content: string, images?: string[], whoCanSee?: number): Promise<SdkResult<{ tid: string; picIds: string[] }>> {
+    try {
+      const [tid, picIds] = await this.publish(content, images, whoCanSee);
+      return this.sdkSuccess({ tid, picIds }, 'official_api', 'strict');
+    } catch (error) {
+      return this.classifySdkFailure(error, 'publishPostStrict', this.qqNumber ?? undefined);
+    }
+  }
+
+  async deletePostStrict(tid: string, topicId = ''): Promise<SdkResult<{ tid: string }>> {
+    try {
+      const res = await this.deleteEmotion(tid, topicId);
+      if (Number(res.code ?? -1) !== 0) {
+        return this.sdkFailure(
+          this.isAuthFailure(res) ? 'auth' : 'upstream_changed',
+          false,
+          'strict',
+          { endpoint: 'deletePostStrict', tid, message: String(res.message ?? 'delete failed') },
+          'official_api',
+        );
+      }
+      return this.sdkSuccess({ tid }, 'official_api', 'strict');
+    } catch (error) {
+      return this.classifySdkFailure(error, 'deletePostStrict', undefined, tid);
+    }
+  }
+
+  async getPostDetailBestEffort(uin: string, tid: string): Promise<SdkResult<{
+    post: Record<string, unknown>;
+    identity: PostIdentity;
+  }>> {
+    const diagnostic = this.createDiagnosticRef('parse_trace', {
+      endpoint: 'getPostDetailBestEffort',
+      tid,
+      uin,
+      candidate_keys: this.collectPostEntityKeys(tid),
+    });
+    try {
+      const res = await this.getShuoshuoDetail(uin, tid);
+      if (Number(res.code ?? -1) !== 0) {
+        return this.sdkFailure(
+          'parse_miss',
+          false,
+          'best_effort',
+          { endpoint: 'getPostDetailBestEffort', tid, uin, message: String(res.message ?? 'detail unavailable') },
+          this.inferSdkSource(res._source, 'feeds3_html'),
+          [],
+          diagnostic,
+        );
+      }
+      const warnings: string[] = [];
+      if (String((res as Record<string, unknown>)['_message'] ?? '').trim()) warnings.push(String((res as Record<string, unknown>)['_message']));
+      return this.sdkSuccess(
+        { post: res as Record<string, unknown>, identity: this.buildPostIdentity(tid, uin) },
+        this.inferSdkSource(res._source, 'feeds3_html'),
+        'best_effort',
+        warnings,
+        diagnostic,
+      );
+    } catch (error) {
+      const failure = this.classifySdkFailure(error, 'getPostDetailBestEffort', uin, tid);
+      failure.diagnostic = diagnostic;
+      return failure;
+    }
+  }
+
+  async getCommentsBestEffort(input: {
+    uin: string;
+    tid: string;
+    num?: number;
+    pos?: number;
+    options?: BestEffortOptions;
+  }): Promise<SdkResult<{
+    comments: Record<string, unknown>[];
+    identity: PostIdentity;
+    availability: BestEffortAvailability;
+  }>>;
+
+  async getCommentsBestEffort(
+    uin: string,
+    tid: string,
+    num?: number,
+    pos?: number,
+    options?: { forceRefresh?: boolean; maxCacheAgeSec?: number; fastMode?: boolean },
+  ): Promise<ApiResponse>;
+
+  async getCommentsBestEffort(
+    uin: string | {
+      uin: string;
+      tid: string;
+      num?: number;
+      pos?: number;
+      options?: BestEffortOptions;
+    },
+    tid?: string,
+    num = 20,
+    pos = 0,
+    options?: { forceRefresh?: boolean; maxCacheAgeSec?: number; fastMode?: boolean },
+  ): Promise<ApiResponse | SdkResult<{
+    comments: Record<string, unknown>[];
+    identity: PostIdentity;
+    availability: BestEffortAvailability;
+  }>> {
+    if (typeof uin === 'object' && uin !== null) {
+      return this.getCommentsBestEffortSdk(uin as {
+        uin: string;
+        tid: string;
+        num?: number;
+        pos?: number;
+        options?: BestEffortOptions;
+      });
+    }
+    return this.getCommentsBestEffortLegacy(uin, tid ?? '', num, pos, options);
+  }
+
+  private async getCommentsBestEffortSdk(input: {
+    uin: string;
+    tid: string;
+    num?: number;
+    pos?: number;
+    options?: BestEffortOptions;
+  }): Promise<SdkResult<{
+    comments: Record<string, unknown>[];
+    identity: PostIdentity;
+    availability: BestEffortAvailability;
+  }>> {
+    const diagnostic = this.createDiagnosticRef('parse_trace', {
+      endpoint: 'getCommentsBestEffort',
+      tid: input.tid,
+      uin: input.uin,
+      candidate_keys: this.collectPostEntityKeys(input.tid),
+    });
+    try {
+      const res = await this.getCommentsBestEffortLegacy(input.uin, input.tid, input.num ?? 20, input.pos ?? 0, input.options);
+      const comments = this.collectCommentListFromResult(res);
+      const meta = this.getPostMeta(input.tid);
+      const embeddedTotal = Number(res._feeds3_total ?? comments.length);
+      const expected = Number(meta?.cmtnum ?? embeddedTotal ?? 0);
+      const warnings: string[] = [];
+      let availability: BestEffortAvailability = 'available_full';
+      if (Number(res.code ?? -1) !== 0) {
+        const kind = this.getApiFailureKind(res);
+        if (kind === 'auth' || kind === 'rate_limit') {
+          return this.sdkFailure(
+            kind,
+            kind === 'rate_limit',
+            'best_effort',
+            {
+              endpoint: 'getCommentsBestEffort',
+              tid: input.tid,
+              uin: input.uin,
+              candidateKeys: this.collectPostEntityKeys(input.tid),
+              message: String(res.message ?? 'comment read failed'),
+            },
+            this.inferSdkSource(res._source, 'feeds3_html'),
+            warnings,
+            diagnostic,
+          );
+        }
+      }
+      if (comments.length === 0 && expected > 0) {
+        availability = 'not_embedded';
+        warnings.push('post counts indicate comments exist but html did not embed comment detail');
+      } else if (expected > comments.length) {
+        availability = 'available_partial';
+        warnings.push('embedded comments are partial relative to counted comments');
+      }
+      if (Number(res.code ?? -1) !== 0 && comments.length === 0 && availability !== 'not_embedded') {
+        return this.sdkFailure(
+          'parse_miss',
+          false,
+          'best_effort',
+          {
+            endpoint: 'getCommentsBestEffort',
+            tid: input.tid,
+            uin: input.uin,
+            candidateKeys: this.collectPostEntityKeys(input.tid),
+            message: String(res.message ?? 'comment parse miss'),
+          },
+          this.inferSdkSource(res._source, 'feeds3_html'),
+          warnings,
+          diagnostic,
+        );
+      }
+      return this.sdkSuccess(
+        { comments, identity: this.buildPostIdentity(input.tid, input.uin), availability },
+        this.inferSdkSource(res._source, comments.length > 0 ? 'feeds3_html' : 'derived'),
+        'best_effort',
+        warnings,
+        diagnostic,
+      );
+    } catch (error) {
+      const failure = this.classifySdkFailure(error, 'getCommentsBestEffort', input.uin, input.tid);
+      failure.diagnostic = diagnostic;
+      return failure;
+    }
+  }
+
+  private async getCommentsBestEffortLegacy(
+    uin: string,
+    tid: string,
+    num = 20,
+    pos = 0,
+    options?: { forceRefresh?: boolean; maxCacheAgeSec?: number; fastMode?: boolean },
+  ): Promise<ApiResponse> {
+    const fastMode = options?.fastMode === true;
+    log('DEBUG', `getCommentsBestEffort: uin=${uin} tid=${tid} num=${num} pos=${pos} fastMode=${fastMode}`);
+    this.lastFeeds3BusinessFailure = null;
+
+    const forceRefresh = options?.forceRefresh ?? false;
+    const maxCacheAgeSec = options?.maxCacheAgeSec ?? 90;
+    let feeds3List = this.feeds3Comments.get(tid);
+    this.aliasFeeds3CommentsToCanonicalTid(tid);
+    feeds3List = this.feeds3Comments.get(tid);
+    const cacheAgeSec = this.commentCacheAgeSeconds(tid);
+    const candidateKeys = this.collectPostEntityKeys(tid);
+
+    const wrapCommentPage = (
+      base: ApiResponse,
+      sliceLen: number,
+      total: number,
+      source: string,
+      fastLogFetches?: number,
+    ): ApiResponse => {
+      const has_more = pos + sliceLen < total;
+      const nc = has_more ? String(pos + sliceLen) : '';
+      if (fastMode && fastLogFetches !== undefined) {
+        log('DEBUG', `[feeds3][fast] mode=fast fetch_count=${fastLogFetches} items=${sliceLen}`);
+        log('DEBUG', `[feeds3][fast] has_more=${has_more} next_cursor=${nc || '(empty)'}`);
+      }
+      return {
+        ...base,
+        has_more,
+        next_cursor: nc,
+        _page_info: { count: sliceLen, source, fast_mode: fastMode },
+      };
+    };
+
+    let commentHttpFetches = 0;
+
+    if (
+      feeds3List
+      && feeds3List.length > 0
+      && !forceRefresh
+      && cacheAgeSec != null
+      && cacheAgeSec <= maxCacheAgeSec
+    ) {
+      const slice = feeds3List.slice(pos, pos + num);
+      return wrapCommentPage(
+        {
+          code: 0,
+          commentlist: slice,
+          _source: 'feeds3_cache',
+          _feeds3_total: feeds3List.length,
+        },
+        slice.length,
+        feeds3List.length,
+        'feeds3_cache',
+        fastMode ? 0 : undefined,
+      );
+    }
+
+    // 如果缓存中没有该 tid 的评论，主动拉取 feeds3 HTML 来解析
+    if (!feeds3List || feeds3List.length === 0) {
+      log('INFO', `getCommentsBestEffort: feeds3Comments 缓存未命中，拉取 HTML 解析 uin=${uin} tid=${tid}`);
+      try {
+        commentHttpFetches = 0;
+
+        // ① 优先好友动态流（与 getFriendFeeds fast 同源）：列表里出现的帖大多在这里，而非作者空间首页
+        if (this.qqNumber) {
+          const htmlFriend = await this.fetchFeeds3Html(this.qqNumber!, false, 0, 50, '', undefined, 'all', 'all');
+          commentHttpFetches += 1;
+          this.mergeFeeds3AncillaryFromHtml(htmlFriend, Math.floor(Date.now() / 1000), 'getCommentsBestEffort.friend');
+          this.aliasFeeds3CommentsToCanonicalTid(tid);
+          feeds3List = this.feeds3Comments.get(tid);
+          log(
+            'DEBUG',
+            `getCommentsBestEffort: 好友流解析后 tid=${tid} 条数=${feeds3List?.length ?? 0}`,
+          );
+        }
+
+        // ② 再拉作者空间 scope=1，补「仅出现在对方主页」或未命中好友首屏的帖
+        if (!feeds3List || feeds3List.length === 0) {
+          const htmlAuthor = await this.fetchFeeds3Html(uin, true, 1, 50);
+          commentHttpFetches += 1;
+          this.mergeFeeds3AncillaryFromHtml(htmlAuthor, Math.floor(Date.now() / 1000), 'getCommentsBestEffort.author');
+          this.aliasFeeds3CommentsToCanonicalTid(tid);
+          feeds3List = this.feeds3Comments.get(tid);
+          log(
+            'DEBUG',
+            `getCommentsBestEffort: 作者空间解析后 tid=${tid} 条数=${feeds3List?.length ?? 0}`,
+          );
+        }
+
+        // ③ ic2 feeds_html_act_all（与 qzone_get_space_html_act_feed 同源）：帖常只出现在「全部动态」HTML，分页直至命中评论桶或无可翻
+        if ((!feeds3List || feeds3List.length === 0) && uin) {
+          let actStart = 0;
+          const actCount = 20;
+          const maxActPages = 25;
+          for (let ap = 0; ap < maxActPages && (!feeds3List || feeds3List.length === 0); ap++) {
+            const act = await this.getFeedsHtmlActAll(uin, { hostUin: uin, start: actStart, count: actCount, scope: 0 });
+            commentHttpFetches += 1;
+            this.aliasFeeds3CommentsToCanonicalTid(tid);
+            feeds3List = this.feeds3Comments.get(tid);
+            if (feeds3List?.length) {
+              log('INFO', `getCommentsBestEffort: feeds_html_act_all 第 ${ap + 1} 页命中 tid=${tid} 评论 ${feeds3List.length} 条`);
+              break;
+            }
+            if (act['code'] !== 0 && act['code'] != null) break;
+            if (!act['has_more']) break;
+            const ns = act['next_start'];
+            actStart = typeof ns === 'number' && Number.isFinite(ns) ? ns : actStart + actCount;
+          }
+        }
+      } catch (e) {
+        log('WARNING', `getCommentsBestEffort: 主动拉取 feeds3 失败: ${e}`);
+      }
+    }
+
+    if (feeds3List && feeds3List.length > 0) {
+      const slice = feeds3List.slice(pos, pos + num);
+      log('INFO', `getCommentsBestEffort: 使用 feeds3 评论数=${slice.length}/${feeds3List.length}`);
+      return wrapCommentPage(
+        {
+          code: 0,
+          commentlist: slice,
+          _source: 'feeds3',
+          _feeds3_total: feeds3List.length,
+        },
+        slice.length,
+        feeds3List.length,
+        'feeds3',
+        fastMode ? commentHttpFetches : undefined,
+      );
+    }
+
+    log('WARNING', `getCommentsBestEffort: 未在 feeds3 好友流+作者空间首页解析到该 tid 的评论`);
+    if (this.lastFeeds3BusinessFailure) {
+      return wrapCommentPage(
+        this.buildFeeds3FailureResponse(this.lastFeeds3BusinessFailure, {
+          commentlist: [],
+          _feeds3_total: 0,
+        }),
+        0,
+        0,
+        'feeds3',
+        fastMode ? commentHttpFetches : undefined,
+      );
+    }
+    if (candidateKeys.length > 0) {
+      const meta = this.postMetaCache.get(tid);
+      const commentHint = meta?.cmtnum != null && meta.cmtnum > 0
+        ? 'post_counts_present_but_not_embedded'
+        : 'html_no_matching_comment_bucket';
+      log('WARNING', `getCommentsBestEffort: ${commentHint} tid=${tid} candidate_keys=${candidateKeys.join('|')}`);
+    }
+    const empty = {
+      code: -1,
+      message:
+        'comments_not_found_in_feeds3: 已尝试好友流、作者 feeds3(scope=1)、feeds_html_act_all 分页；仍无桶则帖无展开评论、tid 不一致或 HTML 结构变化',
+      commentlist: [] as unknown[],
+      has_more: false,
+      next_cursor: '',
+      _page_info: { count: 0, source: 'feeds3', fast_mode: fastMode },
+    };
+    if (fastMode) {
+      log('DEBUG', `[feeds3][fast] mode=fast fetch_count=${commentHttpFetches} items=0`);
+      log('DEBUG', `[feeds3][fast] has_more=false next_cursor=(empty)`);
+    }
+    return empty;
+  }
+
+  // ──────────────────────────────────────────────
+  // Like list (仅 feeds3，PC/mobile detail 已移除)
+  // ──────────────────────────────────────────────
+
+  private feeds3LikesCache = new Map<string, Array<Record<string, unknown>>>();
+  private lastFeeds3FailureByTid = new Map<string, ApiResponse>();
+
+  /**
+   * 获取点赞列表（仅 feeds3）。
+   */
+  async getLikeListBestEffort(uin: string, tid: string): Promise<Array<Record<string, unknown>>> {
+    log('DEBUG', `getLikeListBestEffort: uin=${uin} tid=${tid}`);
+
+    this.lastFeeds3BusinessFailure = null;
+    this.lastFeeds3FailureByTid.delete(tid);
+    this.aliasFeeds3LikesToCanonicalTid(tid);
+    const cached = this.feeds3LikesCache.get(tid);
+    if (cached) {
+      log('INFO', `getLikeListBestEffort: 使用 feeds3 缓存 ${cached.length} 个点赞`);
+      return cached;
+    }
+
+    // 主动拉取 feeds3 解析点赞
+    try {
+      log('INFO', `getLikeListBestEffort: feeds3 缓存未命中，主动拉取 uin=${uin} tid=${tid}`);
+      const htmlText = await this.fetchFeeds3Html(uin, true, 1, 50);
+      this.mergeFeeds3AncillaryFromHtml(htmlText, Math.floor(Date.now() / 1000), 'getLikeListBestEffort.author');
+      this.aliasFeeds3LikesToCanonicalTid(tid);
+      let likes = this.feeds3Likes.get(tid) ?? [];
+
+      if (likes.length === 0 && uin !== this.qqNumber) {
+        log('DEBUG', `getLikeListBestEffort: scope=1 未找到，尝试 scope=0`);
+        const htmlText2 = await this.fetchFeeds3Html(this.qqNumber!, false, 0, 50, '', undefined, 'all', 'all');
+        this.mergeFeeds3AncillaryFromHtml(htmlText2, Math.floor(Date.now() / 1000), 'getLikeListBestEffort.friend');
+        this.aliasFeeds3LikesToCanonicalTid(tid);
+        const likes2 = this.feeds3Likes.get(tid) ?? [];
+        if (likes2.length > 0) {
+          likes = likes2;
+        }
+      }
+
+      if (likes.length > 0) {
+        log('INFO', `getLikeListBestEffort: feeds3 解析成功 ${likes.length} 个点赞`);
+        return this.feeds3LikesCache.get(tid) ?? [];
+      }
+      log('DEBUG', `getLikeListBestEffort: feeds3 无点赞数据`);
+    } catch (e) {
+      log('WARNING', `getLikeListBestEffort: feeds3 解析失败: ${e}`);
+    }
+
+    const candidateKeys = this.collectPostEntityKeys(tid);
+    if (this.lastFeeds3BusinessFailure) {
+      this.lastFeeds3FailureByTid.set(tid, this.lastFeeds3BusinessFailure);
+      return [];
+    }
+    if (candidateKeys.length > 0) {
+      const meta = this.postMetaCache.get(tid);
+      const likeHint = meta?.likenum != null && meta.likenum > 0
+        ? 'post_counts_present_but_not_embedded'
+        : 'html_no_matching_like_bucket';
+      log('WARNING', `getLikeListBestEffort: ${likeHint} tid=${tid} candidate_keys=${candidateKeys.join('|')}`);
+    }
+    log('WARNING', `getLikeListBestEffort: 全部失败，返回空数组`);
+    return [];
+  }
+
+  // ──────────────────────────────────────────────
+  // Image upload
+  // ──────────────────────────────────────────────
+  async getLikesBestEffort(uin: string, tid: string): Promise<SdkResult<{
+    likes: Array<Record<string, unknown>>;
+    identity: PostIdentity;
+    availability: BestEffortAvailability;
+  }>> {
+    const diagnostic = this.createDiagnosticRef('parse_trace', {
+      endpoint: 'getLikesBestEffort',
+      tid,
+      uin,
+      candidate_keys: this.collectPostEntityKeys(tid),
+    });
+    try {
+      const likes = await this.getLikeListBestEffort(uin, tid);
+      const feeds3Failure = this.lastFeeds3FailureByTid.get(tid);
+      if (feeds3Failure) {
+        const kind = this.getApiFailureKind(feeds3Failure);
+        return this.sdkFailure(
+          kind,
+          kind === 'rate_limit',
+          'best_effort',
+          {
+            endpoint: 'getLikesBestEffort',
+            tid,
+            uin,
+            candidateKeys: this.collectPostEntityKeys(tid),
+            message: this.describeApiFailure(feeds3Failure) || 'like read failed',
+          },
+          'feeds3_html',
+          [],
+          diagnostic,
+        );
+      }
+      const meta = this.getPostMeta(tid);
+      const expected = Number(meta?.likenum ?? likes.length);
+      const warnings: string[] = [];
+      let availability: BestEffortAvailability = 'available_full';
+      if (likes.length === 0 && expected > 0) {
+        availability = 'not_embedded';
+        warnings.push('post counts indicate likes exist but html did not embed like detail');
+      } else if (expected > likes.length) {
+        availability = 'available_partial';
+        warnings.push('embedded likes are partial relative to counted likes');
+      }
+      return this.sdkSuccess(
+        { likes, identity: this.buildPostIdentity(tid, uin), availability },
+        likes.length > 0 ? 'feeds3_html' : 'derived',
+        'best_effort',
+        warnings,
+        diagnostic,
+      );
+    } catch (error) {
+      const failure = this.classifySdkFailure(error, 'getLikesBestEffort', uin, tid);
+      failure.diagnostic = diagnostic;
+      return failure;
+    }
+  }
+
+  async getFriendFeedsBestEffort(
+    cursor = '',
+    num = 50,
+    options?: BestEffortOptions,
+  ): Promise<SdkResult<{
+    posts: Record<string, unknown>[];
+    nextCursor?: string;
+    hasMore: boolean;
+  }>> {
+    const diagnostic = this.createDiagnosticRef('parse_trace', {
+      endpoint: 'getFriendFeedsBestEffort',
+      cursor,
+      num,
+    });
+    try {
+      const res = await this.getFriendFeeds(cursor, num, { fastMode: options?.fastMode });
+      if (Number(res.code ?? -1) !== 0) {
+        const kind = this.getApiFailureKind(res);
+        return this.sdkFailure(
+          kind === 'auth' || kind === 'rate_limit' ? kind : 'parse_miss',
+          kind === 'rate_limit',
+          'best_effort',
+          { endpoint: 'getFriendFeedsBestEffort', message: String(res.message ?? 'friend feeds unavailable') },
+          this.inferSdkSource(res._source ?? (res._page_info as Record<string, unknown> | undefined)?.source, 'feeds3_html'),
+          [],
+          diagnostic,
+        );
+      }
+      return this.sdkSuccess(
+        {
+          posts: Array.isArray(res.msglist) ? res.msglist as Record<string, unknown>[] : [],
+          nextCursor: typeof res.next_cursor === 'string' ? res.next_cursor : undefined,
+          hasMore: Boolean(res.has_more ?? res.next_cursor),
+        },
+        this.inferSdkSource(res._source ?? (res._page_info as Record<string, unknown> | undefined)?.source, 'feeds3_html'),
+        'best_effort',
+        [],
+        diagnostic,
+      );
+    } catch (error) {
+      const failure = this.classifySdkFailure(error, 'getFriendFeedsBestEffort');
+      failure.diagnostic = diagnostic;
+      return failure;
+    }
+  }
+
+  async uploadImage(imageBase64: string, albumId?: string): Promise<UploadImageResult> {
+    this.requireLogin();
+    const albumtype = albumId ? 0 : 7;
+    const refer = albumId ? 'album' : 'shuoshuo';
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= UPLOAD_IMAGE_RETRY_COUNT; attempt++) {
+      try {
+        const params = new URLSearchParams({
+          qzreferrer: this.getQzreferrer(),
+          filename: 'filename',
+          zzpanelkey: '',
+          qzonetoken: '',
+          uploadtype: '1',
+          albumtype: String(albumtype),
+          exttype: '0',
+          refer,
+          output_type: 'jsonhtml',
+          charset: 'utf-8',
+          output_charset: 'utf-8',
+          upload_hd: '1',
+          hd_width: '2048',
+          hd_height: '10000',
+          hd_quality: '96',
+          backUrls: 'http://upbak.photo.qzone.qq.com/cgi-bin/upload/cgi_upload_image',
+          url: `https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${this.getGtk()}`,
+          base64: '1',
+          skey: this.cookies['skey'] ?? '',
+          zzpaneluin: this.qqNumber!,
+          uin: this.qqNumber!,
+          p_skey: this.cookies['p_skey'] ?? '',
+          jsonhtml_callback: 'callback',
+          p_uin: this.qqNumber!,
+          picfile: imageBase64,
+        });
+        if (albumId) params.set('albumid', albumId);
+
+        const url = `https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${this.getGtk()}`;
+        const resp = await this.post(url, { data: params });
+        if (resp.status >= 400) throw new Error(`图片上传 HTTP ${resp.status}`);
+        const html = resp.text;
+
+        try {
+          const parsed = parseJsonp(html, 'callback') as Record<string, unknown>;
+          if (parsed && typeof parsed === 'object') {
+            const dataObj = parsed['data'];
+            if (dataObj && typeof dataObj === 'object' && ('lloc' in dataObj || 'albumid' in dataObj)) {
+              return dataObj as UploadImageResult;
+            }
+            if ('lloc' in parsed || 'albumid' in parsed) return parsed as UploadImageResult;
+          }
+        } catch { /* fall through */ }
+
+        const jsonMatch = html.match(/\{[^{}]*"albumid"[^{}]*\}/s);
+        if (jsonMatch) {
+          try {
+            const c = JSON.parse(jsonMatch[0]) as UploadImageResult;
+            if (c.lloc || c.albumid) return c;
+          } catch { /* ignore */ }
+        }
+
+        try {
+          const si = html.indexOf('"data"') + 7;
+          const ei = html.indexOf('"ret"') - 1;
+          if (si >= 7 && ei > si) {
+            const s = html.slice(si, ei).replace(/,\s*$/, '').trim();
+            return JSON.parse(s) as UploadImageResult;
+          }
+        } catch { /* ignore */ }
+
+        throw new Error(`图片上传解析失败，响应内容: ${html.slice(0, 300)}`);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= UPLOAD_IMAGE_RETRY_COUNT) break;
+        await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  // ──────────────────────────────────────────────
+  // Publish
+  // ──────────────────────────────────────────────
+  async publish(
+    content = '',
+    images?: string[],
+    whoCanSee?: number,
+  ): Promise<[string, string[]]> {
+    this.requireLogin();
+
+    // 转换表情格式：[微笑] -> [em]e100[/em]
+    content = convertNamesToEmojis(content);
+
+    const picId: string[] = [];
+
+    let data: Record<string, unknown>;
+
+    if (!images || images.length === 0) {
+      data = {
+        syn_tweet_version: 1, paramstr: 1, pic_template: '', richtype: '', richval: '',
+        special_url: '', subrichtype: '', con: content, feedversion: 1, ver: 1,
+        ugc_right: 1, to_sign: 0, hostuin: this.qqNumber, code_version: 1,
+        format: 'fs', qzreferrer: this.getQzreferrer(),
+      };
+    } else {
+      const uploadLimit = pLimit(PUBLISH_IMAGE_UPLOAD_CONCURRENCY);
+      const uploaded = await Promise.all(images.map((image, index) => uploadLimit(async () => {
+        try {
+          const ret = await this.uploadImage(image);
+          return { index, ret };
+        } catch (exc) {
+          throw new Error(`第 ${index + 1}/${images.length} 张图片上传失败: ${exc}`);
+        }
+      })));
+      const richval: string[] = [];
+      const picBo: string[] = [];
+      for (const { ret } of uploaded) {
+        const albumid = ret.albumid ?? '';
+        const lloc = ret.lloc ?? '';
+        const sloc = ret.sloc ?? lloc;
+        const picType = ret.type ?? '0';
+        const height = ret.height ?? 0;
+        const width = ret.width ?? 0;
+        richval.push(`,${albumid},${lloc},${sloc},${picType},${height},${width},,${height},${width}`);
+
+        const preUrl = ret.pre ?? '';
+        const boIdx = preUrl.indexOf('bo=');
+        if (boIdx !== -1) {
+          const boStart = boIdx + 3;
+          const boEnd = preUrl.indexOf('&', boStart);
+          picBo.push(boEnd !== -1 ? preUrl.slice(boStart, boEnd) : preUrl.slice(boStart));
+        }
+        picId.push(lloc);
+      }
+      data = {
+        syn_tweet_version: 1, paramstr: 1,
+        pic_template: `tpl-${images.length}-1`, richtype: 1,
+        richval: richval.join('\t'), special_url: '', subrichtype: 1,
+        con: content, feedversion: 1, ver: 1, ugc_right: 1, to_sign: 0,
+        hostuin: this.qqNumber, code_version: 1, format: 'fs',
+        qzreferrer: this.getQzreferrer(),
+        pic_bo: picBo.length > 0 ? `{0}\t{0}`.replace('{0}', picBo.join(',')) : '',
+      };
+    }
+
+    if (whoCanSee !== undefined) {
+      data['who_can_see'] = whoCanSee;
+      if (whoCanSee === 2) data['secret'] = 1;
+    }
+
+    const url = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, { data: new URLSearchParams(data as Record<string, string>) });
+    const result = safeDecodeJsonResponse(resp.data);
+    const dataObj = typeof result['data'] === 'object' && result['data'] ? result['data'] as Record<string, unknown> : {};
+    const tid = result['t1_tid'] ?? result['tid'] ?? dataObj['tid'];
+
+    if (!tid) {
+      throw new Error(`发布说说未返回 tid: code=${result['code']}, message=${String(result['message']).slice(0, 200)}`);
+    }
+    return [String(tid), picId];
+  }
+
+  // ──────────────────────────────────────────────
+  // Social actions
+  // ──────────────────────────────────────────────
+  async deleteEmotion(tid: string, topicId = ''): Promise<ApiResponse> {
+    this.requireLogin();
+    const url = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_delete_v6?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, {
+      data: new URLSearchParams({ hostuin: this.qqNumber!, tid, topicId, code_version: '1', format: 'json', qzreferrer: this.getQzreferrer() }),
+    });
+    const result = parseJsonp(resp.text) as ApiResponse;
+    validateApiResponse('social_action', result, resp.text);
+    return result;
+  }
+
+  /** appid=311 用 /mood/ 路径；其他 app 分享传入实际 unikey（从 feeds3 HTML 提取）才准确 */
+  private buildUnikey(ouin: string, tid: string, appid: number): string {
+    return appid === 311
+      ? `http://user.qzone.qq.com/${ouin}/mood/${tid}`
+      : `http://user.qzone.qq.com/${ouin}/app/${tid}`;  // fallback，通常不准
+  }
+
+  /**
+   * 给帖子点赞。缺失参数时自动从 postMetaCache 补全。
+   */
+  async likeEmotion(
+    ouin: string, tid: string, abstime: number, appid = 0, typeid = 0,
+    unikeyOverride?: string, curkeyOverride?: string,
+  ): Promise<ApiResponse> {
+    this.requireLogin();
+    // 自动从缓存补全缺失参数
+    const meta = this.getPostMeta(tid);
+    if (meta) {
+      if (!ouin && meta.uin) ouin = meta.uin;
+      if (!appid && meta.appid) appid = Number(meta.appid) || 311;
+      if (!typeid && meta.typeid) typeid = Number(meta.typeid) || 0;
+      if (!abstime && meta.abstime) abstime = meta.abstime;
+      if (!unikeyOverride && meta.likeUnikey) unikeyOverride = meta.likeUnikey;
+      if (!curkeyOverride && meta.likeCurkey) curkeyOverride = meta.likeCurkey;
+    }
+    if (!appid) appid = 311;
+    const unikey = unikeyOverride || this.buildUnikey(ouin, tid, appid);
+    const curkey = curkeyOverride || unikey;
+
+    // 方法1: internal_dolike_app（真实请求抓包验证）
+    try {
+      const url1 = `https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app?g_tk=${this.getGtk()}`;
+      const resp1 = await this.post(url1, {
+        data: new URLSearchParams({
+          qzreferrer: this.getQzreferrer(), opuin: this.qqNumber!, unikey, curkey,
+          appid: String(appid), typeid: String(typeid), fid: tid,
+          from: '1', active: '0', fupdate: '1', abstime: String(abstime), format: 'json',
+        }),
+        headers: this.pcHeaders(this.getQzreferrer()),
+      });
+      const p1 = safeDecodeJsonResponse(resp1.data);
+      if ((p1['ret'] as number) === 0 || ((p1['code'] as number) === 0 && (p1['http_status'] as number | undefined ?? 0) < 400)) return p1;
+    } catch { /* try next */ }
+
+    // 方法2: like_cgi_likev6
+    try {
+      const url2 = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/like_cgi_likev6?g_tk=${this.getGtk()}`;
+      const resp2 = await this.post(url2, {
+        data: new URLSearchParams({ opuin: this.qqNumber!, ouin, fid: tid, abstime: String(abstime), appid: String(appid), typeid: String(typeid), key: '', format: 'json', qzreferrer: this.getQzreferrer() }),
+      });
+      const p2 = parseJsonp(resp2.text, '_Callback') as ApiResponse;
+      if ((p2['code'] as number) === 0 || (p2['ret'] as number) === 0) return p2;
+    } catch { /* try next */ }
+
+    // 方法3: mobile
+    return this.likeMobileFeed(ouin, tid, appid, typeid, 0);
+  }
+
+  async unlikeEmotion(
+    ouin: string, tid: string, abstime: number, appid = 0, typeid = 0,
+    unikeyOverride?: string, curkeyOverride?: string,
+  ): Promise<ApiResponse> {
+    this.requireLogin();
+    const meta = this.getPostMeta(tid);
+    if (meta) {
+      if (!ouin && meta.uin) ouin = meta.uin;
+      if (!appid && meta.appid) appid = Number(meta.appid) || 311;
+      if (!typeid && meta.typeid) typeid = Number(meta.typeid) || 0;
+      if (!abstime && meta.abstime) abstime = meta.abstime;
+      if (!unikeyOverride && meta.likeUnikey) unikeyOverride = meta.likeUnikey;
+      if (!curkeyOverride && meta.likeCurkey) curkeyOverride = meta.likeCurkey;
+    }
+    if (!appid) appid = 311;
+    const unikey = unikeyOverride || this.buildUnikey(ouin, tid, appid);
+    const curkey = curkeyOverride || unikey;
+
+    // 方法1: internal_dolike_app
+    const url1 = `https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app?g_tk=${this.getGtk()}`;
+    const resp1 = await this.post(url1, {
+      data: new URLSearchParams({ qzreferrer: this.getQzreferrer(), opuin: this.qqNumber!, unikey, curkey, appid: String(appid), typeid: String(typeid), fid: tid, from: '1', active: '0', fupdate: '1', format: 'json' }),
+      headers: this.pcHeaders(this.getQzreferrer()),
+    });
+    const p1 = safeDecodeJsonResponse(resp1.data);
+    if ((p1['ret'] as number) === 0 || ((p1['code'] as number) === 0 && (p1['http_status'] as number | undefined ?? 0) < 400)) return p1;
+
+    // 方法2: like_cgi_likev6 optype=1
+    const url2 = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/like_cgi_likev6?g_tk=${this.getGtk()}`;
+    const resp2 = await this.post(url2, {
+      data: new URLSearchParams({ opuin: this.qqNumber!, ouin, fid: tid, abstime: String(abstime), appid: String(appid), typeid: String(typeid), optype: '1', format: 'json', qzreferrer: this.getQzreferrer() }),
+    });
+    const p2 = safeDecodeJsonResponse(resp2.data);
+    if ((p2['code'] as number) === 0) return p2;
+
+    // 方法3: mobile
+    return this.likeMobileFeed(ouin, tid, appid, typeid, 1);
+  }
+
+  async likeMobileFeed(friendUin: string, cellid: string, appid = 311, typeid = 0, active = 0): Promise<ApiResponse> {
+    this.requireLogin();
+    const unikey = `http://user.qzone.qq.com/${friendUin}/mood/${cellid}`;
+    const url = `https://mobile.qzone.qq.com/like?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, {
+      data: new URLSearchParams({ unikey, curkey: unikey, appid: String(appid), typeid: String(typeid), active: String(active), fupdate: '1' }),
+      headers: this.mobileHeaders(),
+    });
+    return safeDecodeJsonResponse(resp.data);
+  }
+
+  async commentEmotion(ouin: string, tid: string, content: string, replyCommentId?: string, replyUin?: string, appid = 0, abstime = 0): Promise<ApiResponse> {
+    this.requireLogin();
+
+    // 转换表情格式：[微笑] -> [em]e100[/em]
+    content = convertNamesToEmojis(content);
+
+    // 自动从缓存补全缺失参数
+    const meta = this.getPostMeta(tid);
+    if (meta) {
+      if (!ouin && meta.uin) ouin = meta.uin;
+      if (!appid && meta.appid) appid = Number(meta.appid) || 311;
+      if (!abstime && meta.abstime) abstime = meta.abstime;
+    }
+    if (!appid) appid = 311;
+
+    // 回复评论时，需要在 content 前添加 @提及 格式：@{uin:xxx,nick:xxx,auto:1}
+    let finalContent = content;
+    if (replyCommentId && replyUin) {
+      let nick: string;
+      if (replyUin === this.qqNumber) {
+        nick = this.getNicknameFromCookie() || replyUin;
+      } else {
+        const friendInfo = this.friendCache.get(replyUin);
+        nick = friendInfo?.nickname || replyUin;
+      }
+      if (!content.startsWith('@{')) {
+        finalContent = `@{uin:${replyUin},nick:${nick},auto:1} ${content}`;
+      }
+    }
+
+    const qzRef = this.getQzreferrer();
+    const headers = this.pcHeaders(qzRef);
+
+    // ① PC user 代理 re_feeds（与 doc/social-api.md、forwardEmotion 降级一致）：topicId={ouin}_{tid}，format=json
+    const userReFeeds = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds?g_tk=${this.getGtk()}`;
+    const userParams: Record<string, string> = {
+      hostUin: ouin,
+      topicId: `${ouin}_${tid}`,
+      content: finalContent,
+      format: 'json',
+      qzreferrer: qzRef,
+    };
+    if (replyCommentId && replyUin) {
+      userParams['commentId'] = replyCommentId;
+      userParams['replyUin'] = replyUin;
+      userParams['commentUin'] = replyUin;
+    }
+    log('DEBUG', `commentEmotion: try user re_feeds topicId=${userParams.topicId} reply=${replyCommentId ? 'yes' : 'no'} content=${finalContent.substring(0, 40)}...`);
+    const respUser = await this.post(userReFeeds, {
+      data: new URLSearchParams(userParams),
+      headers,
+    });
+    const pUser = safeDecodeJsonResponse(respUser.data);
+    const okUser =
+      (pUser['code'] as number) === 0
+      || (pUser['ret'] as number) === 0;
+    if (okUser) return pUser;
+
+    // ② h5 路径（旧抓包）：topicId 带 __1、format=fs，部分账号仅在此通路成功
+    const h5Url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds?g_tk=${this.getGtk()}`;
+    const data: Record<string, string> = {
+      topicId: `${ouin}_${tid}__1`,
+      feedsType: '100',
+      inCharset: 'utf-8',
+      outCharset: 'utf-8',
+      plat: 'qzone',
+      source: 'ic',
+      hostUin: ouin,
+      isSignIn: '',
+      platformid: '50',
+      uin: this.qqNumber!,
+      format: 'fs',
+      ref: 'feeds',
+      content: finalContent,
+      richval: '',
+      richtype: '',
+      private: '0',
+      paramstr: replyCommentId && replyUin ? '2' : '1',
+      qzreferrer: qzRef,
+    };
+    if (replyCommentId && replyUin) {
+      data['commentId'] = replyCommentId;
+      data['commentUin'] = replyUin;
+      data['t1_uin'] = ouin;
+      data['t1_tid'] = tid;
+      data['t2_uin'] = replyUin;
+      data['t2_tid'] = replyCommentId;
+    }
+    log('DEBUG', `commentEmotion: fallback h5 topicId=${data.topicId} paramstr=${data.paramstr}`);
+    const resp = await this.post(h5Url, {
+      data: new URLSearchParams(data),
+      headers,
+    });
+    return safeDecodeJsonResponse(resp.data);
+  }
+
+  async deleteComment(uin: string, tid: string, commentId: string, commentUin?: string): Promise<ApiResponse> {
+    this.requireLogin();
+    if (this.routes['delete_comment'] === 'mobile') {
+      const url = `https://mobile.qzone.qq.com/del_comment?g_tk=${this.getGtk()}`;
+      const resp = await this.post(url, {
+        data: new URLSearchParams({ cellid: tid, comment_id: commentId, format: 'json' }),
+        headers: this.mobileHeaders(),
+      });
+      return safeDecodeJsonResponse(resp.data);
+    }
+    // 优先 sns 删除评论接口（与空间页删除一致，返回 frameElement.callback({ ret, code, msg })）
+    const topicId = `${uin}_${tid}`;
+    const snsData: Record<string, string> = {
+      inCharset: 'utf-8',
+      outCharset: 'utf-8',
+      plat: 'qzone',
+      source: 'ic',
+      hostUin: uin,
+      uin,
+      topicId,
+      feedsType: '100',
+      commentId,
+      commentUin: commentUin ?? uin,
+      format: 'fs',
+      ref: 'feeds',
+      paramstr: '2',
+      qzreferrer: this.getQzreferrer(),
+    };
+    try {
+      const snsUrl = `https://sns.qzone.qq.com/cgi-bin/qzshare/cgi_qzsharedeletecomment?&g_tk=${this.getGtk()}`;
+      const snsResp = await this.post(snsUrl, {
+        data: new URLSearchParams(snsData),
+        headers: this.pcHeaders(this.getQzreferrer()),
+      });
+      const snsResult = parseJsonp(snsResp.text) as ApiResponse;
+      const ret = (snsResult['ret'] as number | undefined) ?? (snsResult['code'] as number | undefined);
+      if (ret === 0) return { code: 0, message: (snsResult['msg'] as string) ?? 'ok', ...snsResult };
+      // 非 0 视为失败，继续尝试 taotao
+    } catch { /* fall through */ }
+    const url = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_delcomment_ugc?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, {
+      data: new URLSearchParams({ hostuin: this.qqNumber!, uin, tid, comment_id: commentId, format: 'json', qzreferrer: this.getQzreferrer() }),
+    });
+    return parseJsonp(resp.text) as ApiResponse;
+  }
+
+  async forwardEmotion(ouin: string, tid: string, content = ''): Promise<ApiResponse> {
+    this.requireLogin();
+    const topicId = `${ouin}_${tid}`;
+    const url = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_forward_v6?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, {
+      data: new URLSearchParams({ tid, ouin, opuin: this.qqNumber!, hostUin: ouin, topicId, con: content || '转发', feedversion: '1', ver: '1', code_version: '1', appid: '311', format: 'json', qzreferrer: this.getQzreferrer() }),
+    });
+    const p = safeDecodeJsonResponse(resp.data);
+    if ((p['code'] as number) === 0) return p;
+    // fallback re_feeds
+    const resp2 = await this.post(
+      `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds?g_tk=${this.getGtk()}`,
+      { data: new URLSearchParams({ hostUin: ouin, topicId, content: content || '转发', forward: '1', format: 'json', qzreferrer: this.getQzreferrer() }) },
+    );
+    return safeDecodeJsonResponse(resp2.data);
+  }
+
+  // ──────────────────────────────────────────────
+  // User / Social info
+  // ──────────────────────────────────────────────
+  async getUserInfo(uin: string): Promise<ApiResponse> {
+    this.requireLogin();
+    const url = `https://user.qzone.qq.com/proxy/domain/r.qzone.qq.com/cgi-bin/user/cgi_personal_card?uin=${uin}&g_tk=${this.getGtk()}`;
+    const resp = await this.get(url);
+    const result = safeDecodeJsonResponse(resp.data, '_Callback');
+    validateApiResponse('user_info', result, resp.text);
+    return result;
+  }
+
+  async getFriendList(start = 0, num = 50): Promise<ApiResponse> {
+    this.requireLogin();
+    const selfUin = this.qqNumber!;
+
+    // 第一级：原有 cgi_get_friend_list API（若 QQ 恢复则自动受益）
+    try {
+      const url = `https://user.qzone.qq.com/proxy/domain/r.qzone.qq.com/cgi-bin/qzone/cgi_get_friend_list?g_tk=${this.getGtk()}&uin=${selfUin}&start=${start}&num=${num}&format=json`;
+      const resp = await this.get(url);
+      log('DEBUG', `getFriendList raw (${resp.text.length} bytes): ${resp.text.substring(0, 300)}`);
+      const parsed = parseJsonp(resp.text, '_Callback') as ApiResponse;
+      if (parsed && (parsed as { code?: number }).code === 0) {
+        const data = parsed.data as { items?: Array<{ uin?: string; nickname?: string; figureurl?: string }>; total?: number } | undefined;
+        const items = data?.items ?? (parsed as { items?: unknown[] }).items;
+        if (Array.isArray(items) && items.length > 0) {
+          const list = (items as Array<Record<string, unknown>>).map((f) => ({
+            uin: String(f['uin'] ?? f['fuin'] ?? ''),
+            nickname: String(f['nickname'] ?? f['name'] ?? f['remark'] ?? ''),
+            avatar: String(f['figureurl'] ?? f['logimg'] ?? f['avatar'] ?? ''),
+          })).filter((f) => f.uin && f.uin !== selfUin);
+          if (list.length) {
+            this.mergeFriendCache(list);
+            return {
+              code: 0,
+              message: 'ok',
+              data: { items: list, total: list.length, source: 'api' as const },
+            };
+          }
+        }
+      }
+    } catch (e) {
+      log('DEBUG', `getFriendList API failed: ${e}`);
+    }
+
+    // 第二级：feeds3 scope=0 提取，合并缓存后返回缓存结果
+    try {
+      const extracted = await this.extractFriendsFromFeeds3(3);
+      if (extracted.length) this.mergeFriendCache(extracted);
+      const fromCache = Array.from(this.friendCache.values()).filter((f) => f.uin !== selfUin);
+      const items = fromCache
+        .sort((a, b) => b.lastSeen - a.lastSeen)
+        .slice(start, start + num)
+        .map((f) => ({ uin: f.uin, nickname: f.nickname, avatar: f.avatar }));
+      if (items.length || fromCache.length) {
+        return {
+          code: 0,
+          message: 'ok',
+          data: { items, total: fromCache.length, source: 'feeds3' as const },
+        };
+      }
+    } catch (e) {
+      log('WARNING', `getFriendList feeds3 failed: ${e}`);
+    }
+
+    // 第三级（可选）：Playwright 好友管理页
+    const usePlaywright = env.friendPlaywright;
+    if (usePlaywright) {
+      try {
+        const pwList = await this.getFriendListViaPlaywright();
+        if (pwList && pwList.length) {
+          this.mergeFriendCache(pwList);
+          const fromCache = Array.from(this.friendCache.values()).filter((f) => f.uin !== selfUin);
+          const items = fromCache
+            .sort((a, b) => b.lastSeen - a.lastSeen)
+            .slice(start, start + num)
+            .map((f) => ({ uin: f.uin, nickname: f.nickname, avatar: f.avatar }));
+          return {
+            code: 0,
+            message: 'ok',
+            data: { items, total: fromCache.length, source: 'playwright' as const },
+          };
+        }
+      } catch (e) {
+        log('WARNING', `getFriendList Playwright failed: ${e}`);
+      }
+    }
+
+    // 仅返回已有缓存（可能为空）
+    const fromCache = Array.from(this.friendCache.values()).filter((f) => f.uin !== selfUin);
+    const items = fromCache
+      .sort((a, b) => b.lastSeen - a.lastSeen)
+      .slice(start, start + num)
+      .map((f) => ({ uin: f.uin, nickname: f.nickname, avatar: f.avatar }));
+    return {
+      code: 0,
+      message: fromCache.length ? 'ok (cache only)' : 'no friends',
+      data: { items, total: fromCache.length, source: 'feeds3' as const },
+    };
+  }
+
+  /**
+   * 可选：Playwright 打开好友管理页提取完整好友列表。受 cooldown 限制。
+   */
+  async getFriendListViaPlaywright(): Promise<Array<{ uin: string; nickname: string; avatar: string }> | null> {
+    const now = Date.now() / 1000;
+    if (now - this.playwrightFailTime < this.playwrightCooldown) return null;
+    this.requireLogin();
+    const uin = this.qqNumber!;
+    const pw = await launchPlaywright();
+    if (!pw) return null;
+    log('INFO', 'Playwright fetching friend list...');
+    let browser: { close: () => Promise<void> } | null = pw.browser;
+    try {
+      const ctx = await (browser as any).newContext({
+        userAgent: QzoneClient.UA,
+        viewport: { width: 1280, height: 800 },
+      });
+      const cookieArray: any[] = [];
+      for (const [name, value] of Object.entries(this.cookies)) {
+        for (const domain of ['.qq.com', '.qzone.qq.com']) {
+          cookieArray.push({ name, value, domain, path: '/' });
+        }
+      }
+      await ctx.addCookies(cookieArray);
+      const page = await ctx.newPage();
+      const url = `https://user.qzone.qq.com/${uin}/friends/manage`;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(5000);
+      const list = await page.$$eval(
+        '[class*="friend"] a[href*="qzone.qq.com"]',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (links: any[]) => {
+          const seen = new Set<string>();
+          const result: Array<{ uin: string; nickname: string; avatar: string }> = [];
+          for (const a of links) {
+            const href = a.href || '';
+            const match = href.match(/qzone\.qq\.com\/(\d+)/);
+            if (!match) continue;
+            const uin = match[1];
+            if (uin === '0' || seen.has(uin)) continue;
+            seen.add(uin);
+            const nickname = (a.textContent || '').trim();
+            const img = a.querySelector('img');
+            const avatar = img ? img.src || '' : '';
+            result.push({ uin, nickname, avatar });
+          }
+          return result;
+        },
+      );
+      await ctx.close();
+      if (browser) await browser.close();
+      browser = null;
+      if (list.length) {
+        log('INFO', `Playwright friend list: ${list.length} friends`);
+        return list;
+      }
+      this.playwrightFailTime = Date.now() / 1000;
+      return null;
+    } catch (exc) {
+      log('WARNING', `Playwright friend list failed: ${exc}`);
+      this.playwrightFailTime = Date.now() / 1000;
+      if (browser) try { await browser.close(); } catch {}
+      return null;
+    }
+  }
+
+  async getVisitorList(uin?: string): Promise<ApiResponse> {
+    this.requireLogin();
+    const targetUin = uin ?? this.qqNumber!;
+    const url = `https://user.qzone.qq.com/proxy/domain/g.qzone.qq.com/cgi-bin/cgi_right_get_visitor_more?g_tk=${this.getGtk()}&uin=${targetUin}&mask=7&format=json`;
+    const resp = await this.get(url);
+    const result = parseJsonp(resp.text, '_Callback') as ApiResponse;
+    validateApiResponse('visitor', result, resp.text);
+    return result;
+  }
+
+  async getLikeList(uin: string, tid: string): Promise<Record<string, unknown>[]> {
+    return this.getLikeListBestEffort(uin, tid);
+  }
+
+  // ──────────────────────────────────────────────
+  // Traffic data (qz_opcnt2) — 参考 OpenCamwall
+  // ──────────────────────────────────────────────
+
+  /**
+   * 获取说说的流量统计数据（点赞/浏览/评论/转发次数）。
+   * API: r.qzone.qq.com/cgi-bin/user/qz_opcnt2
+   */
+  async getTrafficData(uin: string, tid: string): Promise<{ like: number; read: number; comment: number; forward: number }> {
+    const stp = Date.now();
+    const unikey = `http://user.qzone.qq.com/${uin}/mood/${tid}`;
+    const url = `https://user.qzone.qq.com/proxy/domain/r.qzone.qq.com/cgi-bin/user/qz_opcnt2?_stp=${stp}&unikey=${encodeURIComponent(unikey)}&face=0&fupdate=1&g_tk=${this.getGtk()}`;
+    const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+    const parsed = parseJsonp(resp.text, '_Callback') as Record<string, unknown>;
+    validateApiResponse('traffic_data', parsed, resp.text);
+    const dataArr = parsed['data'] as Array<Record<string, unknown>> | undefined;
+    if (!dataArr || !dataArr.length) return { like: -1, read: -1, comment: -1, forward: -1 };
+    const current = dataArr[0]?.['current'] as Record<string, unknown> | undefined;
+    const newdata = current?.['newdata'] as Record<string, unknown> | undefined;
+    if (!newdata || !('LIKE' in newdata)) return { like: -1, read: -1, comment: -1, forward: -1 };
+    return {
+      like:    Number(newdata['LIKE'] ?? -1),
+      read:    Number(newdata['PRD']  ?? -1),
+      comment: Number(newdata['CS']   ?? -1),
+      forward: Number(newdata['ZS']   ?? -1),
+    };
+  }
+
+  // ──────────────────────────────────────────────
+  // Privacy (emotion_cgi_update) — 参考 OpenCamwall
+  // ──────────────────────────────────────────────
+
+  /**
+   * 设置说说的隐私权限（公开/私密）。
+   * ugc_right: 1=公开，64=私密
+   */
+  async setEmotionPrivacy(tid: string, privacy: 'private' | 'public'): Promise<ApiResponse> {
+    this.requireLogin();
+    // 先获取原始说说数据
+    const detail = await this.getShuoshuoDetail(this.qqNumber!, tid);
+    const content = String(detail['content'] ?? detail['con'] ?? '');
+
+    const body: Record<string, string> = {
+      syn_tweet_verson: '1',
+      tid,
+      paramstr: '1',
+      pic_template: '',
+      richtype: '',
+      richval: '',
+      special_url: '',
+      subrichtype: '',
+      con: content,
+      feedversion: '1',
+      ver: '1',
+      ugc_right: privacy === 'private' ? '64' : '1',
+      to_sign: '0',
+      ugcright_id: tid,
+      hostuin: this.qqNumber!,
+      code_version: '1',
+      format: 'fs',
+      qzreferrer: this.getQzreferrer(),
+    };
+
+    // 如果有图片，需重组 richval / pic_bo
+    const pics = detail['pic'] as Array<Record<string, unknown>> | undefined;
+    if (pics && pics.length > 0) {
+      const richvals: string[] = [];
+      const picBos: string[] = [];
+      for (const pic of pics) {
+        const picId = String(pic['pic_id'] ?? '').split(',');
+        if (picId.length >= 3) {
+          richvals.push(`,${picId[1]},${picId[2]},${picId[2]},${pic['pictype'] ?? 0},${pic['height'] ?? 0},${pic['width'] ?? 0},,0,0`);
+        }
+        const smallurl = String(pic['smallurl'] ?? pic['url1'] ?? '');
+        const boMatch = smallurl.match(/bo=([^&]+)/);
+        if (boMatch) picBos.push(boMatch[1]!);
+      }
+      if (richvals.length) {
+        body['richtype'] = '1';
+        body['subrichtype'] = '1';
+        body['richval'] = richvals.join('\t');
+        body['pic_bo'] = picBos.join('\t');
+      }
+    }
+
+    const url = `https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_update?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, {
+      data: new URLSearchParams(body),
+      headers: this.pcHeaders(this.getQzreferrer()),
+    });
+    return safeDecodeJsonResponse(resp.data);
+  }
+
+  // ──────────────────────────────────────────────
+  // Portrait / Nickname — 参考 OpenCamwall
+  // ──────────────────────────────────────────────
+
+  /**
+   * 通过 cgi_get_portrait.fcg 获取用户头像和昵称。
+   * 响应编码为 GBK，JSONP 回调为 portraitCallBack。
+   */
+  async getPortrait(uin: string): Promise<{ nickname: string; avatarUrl: string }> {
+    const url = `https://r.qzone.qq.com/fcg-bin/cgi_get_portrait.fcg?uins=${uin}`;
+    const resp = await this.get(url);
+    // 响应是 GBK 编码，需要从原始 buffer 解码
+    let text: string;
+    if (resp.data instanceof Buffer || resp.data instanceof Uint8Array) {
+      const decoder = new TextDecoder('gbk');
+      text = decoder.decode(resp.data);
+    } else {
+      text = resp.text;
+    }
+    // 格式: portraitCallBack({"uin": [...]})
+    const jsonStr = text.replace(/^portraitCallBack\(/, '').replace(/\)\s*$/, '');
+    try {
+      const data = JSON.parse(jsonStr) as Record<string, unknown[]>;
+      const arr = data[String(uin)];
+      if (Array.isArray(arr)) {
+        return {
+          nickname: String(arr[6] ?? ''),
+          avatarUrl: String(arr[0] ?? ''),
+        };
+      }
+    } catch (e) {
+      log('WARNING', `getPortrait parse failed: ${e}`);
+    }
+    return { nickname: '', avatarUrl: '' };
+  }
+
+  /**
+   * 从 Cookie 中提取昵称（ptnick_qq 字段，值为 hex 编码的 UTF-8 或 URL 编码）。
+   * 仅粘贴 p_skey 等、未带 ptnick 时多为空。
+   */
+  getNicknameFromCookieForUin(uin: string): string {
+    if (!uin) return '';
+    const raw = this.cookies[`ptnick_${uin}`];
+    if (!raw) return '';
+    try {
+      if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+        const bytes = Buffer.from(raw, 'hex');
+        return bytes.toString('utf8');
+      }
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
+  getNicknameFromCookie(): string {
+    return this.qqNumber ? this.getNicknameFromCookieForUin(this.qqNumber) : '';
+  }
+
+  /**
+   * 从 cgi_personal_card（getUserInfo）JSON 中抽取展示昵称；字段随腾讯改版可能变化，做多键兜底。
+   */
+  extractNicknameFromPersonalCard(p: unknown): string {
+    const tryObj = (obj: Record<string, unknown> | null | undefined, keys: string[]): string => {
+      if (!obj) return '';
+      for (const k of keys) {
+        const v = obj[k];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+      return '';
+    };
+    if (!p || typeof p !== 'object') return '';
+    const o = p as Record<string, unknown>;
+    let s = tryObj(o, ['nickname', 'nick', 'user_name', 'username', 'userName']);
+    if (s) return s;
+    const data = o['data'];
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const d = data as Record<string, unknown>;
+      s = tryObj(d, ['nickname', 'nick', 'user_name', 'username', 'userName']);
+      if (s) return s;
+      const user = d['user'];
+      if (user && typeof user === 'object' && !Array.isArray(user)) {
+        s = tryObj(user as Record<string, unknown>, ['nickname', 'nick']);
+        if (s) return s;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 供 get_login_info 等使用：与 NapCat 的 QQ 资料**无关**，仅走空间侧 Cookie / 接口。
+   * 顺序：ptnick → cgi_get_portrait → cgi_personal_card。
+   */
+  async resolveLoginNickname(uin: string): Promise<string> {
+    const fromCookie = this.getNicknameFromCookieForUin(uin).trim();
+    if (fromCookie) return fromCookie;
+    try {
+      const portrait = await this.getPortrait(uin);
+      if (portrait.nickname.trim()) return portrait.nickname.trim();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const card = await this.getUserInfo(uin);
+      const n = this.extractNicknameFromPersonalCard(card).trim();
+      if (n) return n;
+    } catch {
+      /* ignore */
+    }
+    return '';
+  }
+
+  // ──────────────────────────────────────────────
+  // Albums / Photos
+  // ──────────────────────────────────────────────
+  async getAlbumList(uin?: string): Promise<ApiResponse> {
+    this.requireLogin();
+    const targetUin = uin ?? this.qqNumber!;
+    const url = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_list_album?g_tk=${this.getGtk()}&uin=${targetUin}&hostUin=${targetUin}&inCharset=utf-8&outCharset=utf-8&format=json`;
+    const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+    const p = safeDecodeJsonResponse(resp.data, '_Callback');
+    if (!p['_empty'] && (p['http_status'] as number | undefined ?? 0) < 400) {
+      validateApiResponse('album_list', p, resp.text);
+      return p;
+    }
+    const url2 = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_list_photo?g_tk=${this.getGtk()}&uin=${targetUin}&hostUin=${targetUin}&inCharset=utf-8&outCharset=utf-8&format=json`;
+    const resp2 = await this.get(url2, { headers: this.pcHeaders(this.getQzreferrer()) });
+    const albumResult = safeDecodeJsonResponse(resp2.data, '_Callback');
+    validateApiResponse('album_list', albumResult, resp2.text);
+    return albumResult;
+  }
+
+  async getPhotoList(uin?: string, topicId = '', num = 30): Promise<ApiResponse> {
+    this.requireLogin();
+    const targetUin = uin ?? this.qqNumber!;
+    const url = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_floatview_photo_list_v2?g_tk=${this.getGtk()}&uin=${targetUin}&topicId=${topicId}&picKey=&fupdate=1&num=${num}&pageStart=0&inCharset=utf-8&outCharset=utf-8&format=json`;
+    const resp = await this.get(url, { headers: this.pcHeaders(this.getQzreferrer()) });
+    return safeDecodeJsonResponse(resp.data, '_Callback');
+  }
+
+  async createAlbum(name: string, desc = '', priv = 1): Promise<ApiResponse> {
+    this.requireLogin();
+    const url = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_create_album?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, { data: new URLSearchParams({ hostUin: this.qqNumber!, albumname: name, albumdesc: desc, priv: String(priv), format: 'json', qzreferrer: this.getQzreferrer() }) });
+    return safeDecodeJsonResponse(resp.data, '_Callback');
+  }
+
+  async deleteAlbum(albumId: string): Promise<ApiResponse> {
+    this.requireLogin();
+    const url = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_del_album?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, { data: new URLSearchParams({ hostUin: this.qqNumber!, topicId: albumId, format: 'json', qzreferrer: this.getQzreferrer() }) });
+    return safeDecodeJsonResponse(resp.data, '_Callback');
+  }
+
+  async deletePhoto(uin?: string, albumId = '', photoId = ''): Promise<ApiResponse> {
+    this.requireLogin();
+    const targetUin = uin ?? this.qqNumber!;
+    const url = `https://user.qzone.qq.com/proxy/domain/photo.qzone.qq.com/cgi-bin/cgi_del_photo?g_tk=${this.getGtk()}`;
+    const resp = await this.post(url, { data: new URLSearchParams({ hostUin: targetUin, topicId: albumId, lloc: photoId, format: 'json', qzreferrer: this.getQzreferrer() }) });
+    return safeDecodeJsonResponse(resp.data, '_Callback');
+  }
+
+  // ──────────────────────────────────────────────
+  // API route probe
+  // ──────────────────────────────────────────────
+  async probeApiRoutes(uin: string, tid: string): Promise<Routes> {
+    this.requireLogin();
+    const gtk = this.getGtk();
+    let detailPcOk = false;
+    try {
+      const r = parseJsonp((await this.get(`https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_getdetailv6?g_tk=${gtk}&uin=${uin}&tid=${tid}&format=json`)).text) as Record<string, unknown>;
+      detailPcOk = r != null && ('code' in r || 'msg' in r);
+    } catch { /* ignore */ }
+
+    let detailMobileOk = false;
+    try {
+      const r = JSON.parse((await this.get(`https://mobile.qzone.qq.com/detail?g_tk=${gtk}&uin=${uin}&cellid=${tid}&format=json`, { headers: this.mobileHeaders() })).text) as Record<string, unknown>;
+      detailMobileOk = r != null && ('code' in r || 'msg' in r);
+    } catch { /* ignore */ }
+
+    let commentsPcOk = false;
+    try {
+      const r = parseJsonp((await this.get(`https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_getcmtreply_v6?g_tk=${gtk}&uin=${uin}&tid=${tid}&num=5&pos=0&format=json`)).text) as Record<string, unknown>;
+      commentsPcOk = r != null && ('code' in r || 'msg' in r);
+    } catch { /* ignore */ }
+
+    let commentsMobileOk = false;
+    try {
+      const r = JSON.parse((await this.get(`https://mobile.qzone.qq.com/get_comment_list?g_tk=${gtk}&uin=${uin}&cellid=${tid}&num=5&pos=0&format=json`, { headers: this.mobileHeaders() })).text) as Record<string, unknown>;
+      commentsMobileOk = r != null && ('code' in r || 'msg' in r);
+    } catch { /* ignore */ }
+
+    const discovered: Routes = {
+      ...this.routes,
+      detail: detailPcOk ? 'pc' : (detailMobileOk ? 'mobile' : this.routes['detail']),
+      comments: commentsPcOk ? 'pc' : (commentsMobileOk ? 'mobile' : this.routes['comments']),
+    };
+    Object.assign(this.routes, discovered);
+    return discovered;
+  }
+}

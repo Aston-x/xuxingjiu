@@ -1,0 +1,216 @@
+{
+  "manifest_version": 1,
+  "_readme": [
+    "本地推理引擎的声明式定义。它们都跑在 127.0.0.1 上，所以端点里记得写 tier=local，",
+    "这样 Router 会强制 trust_env=false（绕过 HTTP_PROXY），否则环境变量里的代理会把本机请求打死。",
+    "Ollama 另有原生适配器（provider 名就叫 ollama），见 providers/adapters/ollama.py。"
+  ],
+  "providers": [
+    {
+      "name": "vllm",
+      "protocol": "declarative",
+      "display_name": "vLLM",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "vision_input": "none",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_limit": 32768,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:8000/v1。多模态 vLLM 可以另开端点并把 vision 打开。"
+    },
+    {
+      "name": "llamacpp",
+      "protocol": "declarative",
+      "display_name": "llama.cpp server",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:8080/v1。跑 mtmd/LLaVA 之类多模态模型时 vision 才有意义。"
+    },
+    {
+      "name": "textgen",
+      "protocol": "declarative",
+      "display_name": "text-generation-webui（oobabooga）",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "vision_input": "none",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:5000/v1（api 扩展打开后才有）。"
+    },
+    {
+      "name": "localai",
+      "protocol": "declarative",
+      "display_name": "LocalAI",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:8080/v1"
+    },
+    {
+      "name": "koboldcpp",
+      "protocol": "declarative",
+      "display_name": "KoboldCpp",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:5001/v1"
+    },
+    {
+      "name": "xinference",
+      "protocol": "declarative",
+      "display_name": "Xinference",
+      "auth": { "type": "none" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "streaming": true,
+        "temperature_range": [0.0, 2.0],
+        "max_image_side_default": 1024
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = http://127.0.0.1:9997/v1"
+    }
+  ]
+}

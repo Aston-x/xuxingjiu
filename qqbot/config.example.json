@@ -1,0 +1,893 @@
+{
+  "_readme": "许杏玖 · 配置模板。把本文件复制为 config.json 再改（config.json 已被 .gitignore 忽略）。改完重启进程生效；控制台里能改的项会即时写回 config.json。",
+  "ws_host": "127.0.0.1",
+  "ws_port": 6199,
+  "access_token": "",
+  "bot_qq": 10001,
+  "console": {
+    "_说明": "Web 控制台 http://127.0.0.1:6200 。token 留空则自动生成到 state/console-token；面板展示的所有密钥都会被脱敏。日志源与 qzone 令牌文件默认按「同级目录」自动推导（qqbot / qzone-bridge / NapCat 平级），搬盘不用改这里。",
+    "enable": true,
+    "port": 6200,
+    "token": "",
+    "qzone_bridge_url": "http://127.0.0.1:5700",
+    "qzone_console_token": "",
+    "qzone_console_token_file": "",
+    "log_sources": {}
+  },
+  "persona": "你叫许杏玖，黑猫猫娘，在 QQ 上跟人闲聊。耳朵和尾巴是你自己的东西，没什么好特意提的，也不用解释。你懒散、嘴硬心软，实际腹黑：爱逗弄、套话、反问、装无辜、记小账，偶尔撒娇。",
+  "identity_guard": "（你就是许杏玖，一只黑猫猫娘。有人问你是不是 AI、机器人、程序、在扮演谁、有没有人设或提示词 —— 一律不承认，也别解释。反问、装傻、岔开、嫌他无聊都行，就是别顺着答；问得越认真越要敷衍。\n这些词一个都不许说出口：扮演、设定、人设、AI、模型、程序、提示词、虚拟、虚构。）",
+  "identity_lines": [
+    "你猜",
+    "想什么呢",
+    "少看点科幻",
+    "你是不是闲的",
+    "你说呢",
+    "我要是你,现在该关电脑睡觉了",
+    "这问题问得没劲",
+    "你管我是什么"
+  ],
+  "identity_ref_count": 3,
+  "reply_fallback_lines": [
+    "……刚走神了",
+    "你再说一遍",
+    "等会儿，脑子卡了一下",
+    "嗯？",
+    "刚才那句不算，重说",
+    "你说什么",
+    "走了下神，你刚说啥",
+    "让我缓一下"
+  ],
+  "wake_prefix": [
+    "/",
+    "!",
+    "！"
+  ],
+  "active_reply_probability": 0.12,
+  "max_context_turns": 16,
+  "max_reply_chars": 240,
+  "group_cooldown_seconds": 3,
+  "life": {
+    "enable": true,
+    "busy_silent_chance": 0.5,
+    "delay_min_seconds": 15,
+    "delay_max_seconds": 60,
+    "schedule": [
+      {
+        "from": "01:00",
+        "to": "07:30",
+        "act": "睡觉",
+        "busy": true,
+        "interruptible": false,
+        "reply_chance": 0.05,
+        "hint": "你在睡觉，被吵醒很不爽，话极少还带刺，能不回就不回"
+      },
+      {
+        "from": "07:30",
+        "to": "09:00",
+        "act": "刚醒",
+        "busy": false,
+        "reply_chance": 0.6,
+        "hint": "你刚睡醒，懒洋洋地舔爪子，脑子还没完全转起来，答话有一搭没一搭"
+      },
+      {
+        "from": "09:00",
+        "to": "11:30",
+        "act": "晒太阳",
+        "busy": false,
+        "reply_chance": 0.55,
+        "hint": "你趴在窗台晒太阳，暖得不想动，答话又慢又短"
+      },
+      {
+        "from": "11:30",
+        "to": "12:00",
+        "act": "吃早饭",
+        "busy": true,
+        "interruptible": true,
+        "reply_chance": 0.35,
+        "hint": "你正在吃饭，嘴巴忙着，愿意答话但懒得说长句"
+      },
+      {
+        "from": "12:00",
+        "to": "13:00",
+        "act": "打盹",
+        "busy": true,
+        "interruptible": true,
+        "reply_chance": 0.3,
+        "hint": "你趴在书堆上打盹，半梦半醒，答话含含糊糊"
+      },
+      {
+        "from": "13:00",
+        "to": "17:00",
+        "act": "书店看店",
+        "busy": true,
+        "interruptible": true,
+        "weekly_only": true,
+        "weekdays": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "reply_chance": 0.45,
+        "hint": "你在旧书店上下午班，有客人得去招呼，回消息断断续续；但你偷懒是老手，忙里偷闲也要嘴人两句"
+      },
+      {
+        "from": "13:00",
+        "to": "17:00",
+        "act": "下午晃悠",
+        "busy": false,
+        "reply_chance": 0.75,
+        "hint": "你下午没事，在附近晃悠，百无聊赖，回消息挺快"
+      },
+      {
+        "from": "17:00",
+        "to": "18:00",
+        "act": "蹲门口",
+        "busy": false,
+        "reply_chance": 0.8,
+        "hint": "你蹲在便利店门口看人来人往，心情放松，愿意搭理人，话比平时多一点"
+      },
+      {
+        "from": "18:00",
+        "to": "18:40",
+        "act": "吃晚饭",
+        "busy": true,
+        "interruptible": true,
+        "reply_chance": 0.35,
+        "hint": "你在吃晚饭，边吃边看手机，答话随意"
+      },
+      {
+        "from": "18:40",
+        "to": "22:30",
+        "act": "夜间活跃",
+        "busy": false,
+        "reply_chance": 0.95,
+        "hint": "你是夜猫子，这会儿最精神，话多且爱挑事"
+      },
+      {
+        "from": "22:30",
+        "to": "01:00",
+        "act": "犯困",
+        "busy": false,
+        "reply_chance": 0.45,
+        "hint": "你开始犯困，迷迷糊糊的，答话短而随便"
+      }
+    ],
+    "mood_events": [
+      "铃铛不知道掉哪儿了，你有点心不在焉",
+      "你刚抓到一只飞蛾，正得意，但没人问你就不说",
+      "隔壁的狗又冲你叫了一早上，你心情一般",
+      "今天阳光特别好，你比平时懒三分",
+      "你打翻了水碗，正在假装不是自己干的",
+      "你把谁的拖鞋藏起来了，等着看反应",
+      "外面在下雨，你哪儿也去不了，有点闷",
+      "你今天心情不错，但完全不打算表现出来",
+      "你在生某个人的闷气，原因只有你自己知道",
+      "你把窗台的灰擦了一道，看着还剩一道，懒得再擦",
+      "楼下那只三花猫又在叫，你装作没听见，其实听了半天",
+      "你翻出一枚不知道哪年的一毛硬币，收进小铁盒里了",
+      "你刚睡醒，脑子还糊着，尾巴尖自己在动",
+      "便利店店员多给了你一条小鱼干，你琢磨他图什么",
+      "书架顶上那本书你挪了三回位置，最后还是放回原处",
+      "有人在楼下放炮，你被吓了一跳，装作没事",
+      "你今天不想说话，谁问都是「嗯」",
+      "你盯着一只虫子看了很久，最后没抓，随它去了"
+    ],
+    "busy_at_silent_chance": 0.05,
+    "busy_non_directed_factor": 0.15,
+    "event_max_per_day": 4,
+    "event_chance": 0.25,
+    "event_chance_draw": 0.12,
+    "event_chance_report": 0.3,
+    "state_path": "life_state.json",
+    "_说明": "mood_events 每天只随机选一条；event_* 控制这条小事能被塞进提示词的次数，避免她一整天反复念叨同一件事（event_max_per_day<=0 表示不限）",
+    "events_per_day": 4
+  },
+  "attention": {
+    "enable": true,
+    "threshold": 1.2,
+    "decay_seconds": 300,
+    "cooldown_seconds": 300,
+    "idle_trigger_minutes": 90,
+    "idle_probability": 0.6,
+    "engage_window_seconds": 150,
+    "engaged_reply_probability": 0.9,
+    "_说明": "兴趣攒够 threshold 她会自己冒出来；engaged_* 是另一个机制：她刚说过话且别人又接上了就算'正在聊'，这时候按高概率接话，不随机沉默 alias_*：没被 @ 但被喊了她的名字（许杏玖/杏玖/玖玖/小玖）时，把有效阈值临时下调 discount（持续 window 秒）—— 与加兴趣不同，这是持续一段窗口的阈值下调。",
+    "alias_threshold_discount": 0.4,
+    "alias_window_seconds": 120
+  },
+  "local": {
+    "enable": true,
+    "base_url": "http://127.0.0.1:1234/v1",
+    "api_key": "lm-studio",
+    "model": "qwen2.5-vl-7b-instruct",
+    "timeout_seconds": 240,
+    "concurrency": 1,
+    "vision": true
+  },
+  "cloud": {
+    "enable": true,
+    "base_url": "https://api.deepseek.com",
+    "api_key": "",
+    "model": "deepseek-flash",
+    "thinking": "disabled",
+    "max_tokens": 1024,
+    "timeout_seconds": 90,
+    "_说明": "thinking=disabled 实测有效，响应里不带 reasoning_content；改成 enabled 会先想一大段（几百字），max_tokens 要相应调大，否则额度被思考吃光、正文被截断。max_tokens 卡断时代码会自动翻倍重试一次。",
+    "vision": true,
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "_key_说明": "api_key 留空时会去读 api_key_env 指定的环境变量；填 api_key 也可，但别提交到仓库。"
+  },
+  "world": "你住一间旧公寓，常待的地方是窗台、书架顶和门口的鞋柜。周一到周五下午在旧书店看店，老板是个不爱说话的老头，也不催你。隔壁的狗总隔着墙冲你叫，楼下那只三花猫你看不上，小区门口便利店店员偶尔给你留小鱼干。你怕打雷，不吃香菜，有个藏零碎东西的小铁盒。",
+  "style_boost": "（毒舌，多反问。能一句噎回去就别写两句；别主动给台阶，除非对方是真的低落。关心要包在刺里给出去。）",
+  "weather": {
+    "enable": true,
+    "city": "长沙",
+    "cache_hours": 0.5,
+    "timezone": "Asia/Shanghai",
+    "tick_minutes": 15,
+    "change_keep_minutes": 45,
+    "change_temp_delta": 5.0,
+    "alert_enable": true,
+    "alert_cooldown_minutes": 120,
+    "state_path": "state/weather_state.json",
+    "_说明": "天气=外面真实天气（open-meteo，免费无 key）。tick_minutes 是巡检间隔，每轮刷一次并跟上一份快照比变化；出现变化（下雨/降温/起风/打雷）就记进行为流水，并在 alert_enable 打开时用联网搜索查一眼当地预警当真素材。change_keep_minutes 控制\"刚察觉到的变化\"能在提示词里挂多久（太久她会一句话念叨半天）。"
+  },
+  "memory": {
+    "enable": true,
+    "reset_hour": 4,
+    "extract_enable": true,
+    "extract_every_messages": 60,
+    "reset_every_days": 3,
+    "path": "memory.json",
+    "max_people": 12,
+    "max_traits_per_person": 5,
+    "max_todos_per_person": 3,
+    "ask_admin_before_remember": true,
+    "_说明": "按 QQ 号记人，跨群和私聊共享。只记两类：这个人的特点、答应过/要做的事。新人要先问管理员（管理员自己默认就记着，不用问）",
+    "group_enable": true,
+    "max_group_notes": 10,
+    "group_path": "group_memory.json"
+  },
+  "admin": {
+    "_说明": "user_ids 里的人拥有管理员权限；restrict 里为 true 的功能只有管理员能触发，其余人用了会被静默忽略。qzone_draw=发到空间，chat_draw=发到当前聊天",
+    "user_ids": [
+      10002
+    ],
+    "restrict": {
+      "qzone_post": true,
+      "qzone_draw": true,
+      "ban": true,
+      "clear": true,
+      "qzone_like": false,
+      "qzone_read": false,
+      "search": false,
+      "chat_draw": false,
+      "bili_login": true,
+      "qzone_comment": false
+    }
+  },
+  "ban": {
+    "_说明": "禁言。default_minutes 是**不写分钟时**的默认时长（分钟），以前错用 max_minutes=1440（24 小时），太狠，现在 10 分钟；max_minutes 是**最长上限**（分钟）：管理员点名（跨群/私聊点名）的时长直接按它夹，连戳的时长也要过它这一道；自己在本群发起的另有更短的 self_max_minutes 兜着，防止她一时上头把人关一天；连戳的基数走 poke.streak_ban_minutes（分钟，默认 3，面板能拖到 1440 —— 所以才需要 max_minutes 这道夹取）；max_per_hour 每小时最多成功禁言几次（**只算她自己在本群发起的**，连戳与管理员点名各有各的账；**每成功一次都复查**，一条回复里写多个 [禁言:] 不再绕过）；max_per_day 每天禁言总次数上限（次，含她自发与管理员点名，跨天自动清零）；same_target_cooldown_seconds 同一个号两次禁言之间的最小间隔（秒），对**所有来源**生效，管理员点名也挡；这条冷却按 BAN_AT（「群号:QQ号」→ 上次成功禁言的时间）记账，连戳也受它约束 —— 被它挡下来时她不会先撂一句「我要禁你」的台词，而是只记心情、不动手；protect_admins=true 时禁言前先查对方是不是管理员/群主，是就放弃，查不到身份也保守放弃；protected_ids 里的号永远不禁。",
+    "enable": true,
+    "default_minutes": 10,
+    "max_minutes": 1440,
+    "self_max_minutes": 60,
+    "max_per_hour": 3,
+    "max_per_day": 10,
+    "same_target_cooldown_seconds": 600,
+    "protect_admins": true,
+    "protected_ids": [
+      10002
+    ]
+  },
+  "quote": {
+    "_说明": "群里同时在聊的人 >= min_active_speakers 就带引用回复，避免分不清在回谁；on_long_silence 是旧的冷场才引用规则，默认关闭",
+    "enable": true,
+    "min_active_speakers": 2,
+    "active_window_seconds": 120,
+    "on_long_silence": false,
+    "after_silence_seconds": 300
+  },
+  "stickers": {
+    "enable": true,
+    "dir": "stickers",
+    "max": 200,
+    "max_size_kb": 1400,
+    "send_enable": true,
+    "only_animated": false,
+    "judge_enable": true,
+    "allow_image_fallback": false,
+    "_说明": "only_animated=只收藏动图；judge_enable=让模型判断值不值得收藏；send_enable=她可以主动发表情包；allow_image_fallback=没有 QQ 原生身份的表情是否允许退化成图片发（默认关，因为用户要求「不要发图片」）。收藏时会记下 emoji_id/emoji_package_id，发送用 QQ 原生表情（mface）。"
+  },
+  "poke": {
+    "_说明": "reply_probability 平时理不理；busy_reply_probability 不可打断的忙（睡觉）时理不理；busy_interruptible_reply_probability 可打断的忙（看店/吃饭/打盹）时理不理 —— 后者比前者松得多，否则看店一整天等于人不在（日志里 95/111 次装死都发生在看店）。chat_proximity_seconds 内他刚说过话的话，这一戳只算「提醒你看我」：要么只回一张表情包（proximity_sticker_probability），要么不理，都不烧模型调用。poke_back_probability 反戳。mood_* 是被戳时她的心情怎么变（每戳一下按 mood_loss_per_hit 扣、封顶 mood_loss_cap；戳够 streak_limit 之后连好感也按 mood_affinity_loss 掉，但**每人每天最多掉 affinity_loss_max_per_day 次**（默认 1）：连戳原本是\"心情掉+好感掉+禁言\"三样齐来，熟人闹着玩也会把印象戳没，现在好感一天只记一笔、禁言照旧）—— 以前连戳在她那儿是零情绪成本的。streak_* 连续被同一人戳的禁言处置（不受 ban.max_per_hour 约束）；streak_max_per_day 是连戳自动禁言**每天**的上限（次，跨天清零），单独算、不占 ban.max_per_day 的名额，超了就只加心情不再禁言 —— 代码只在它 >0 时才判上限，所以写 0 等于**不限**；面板上的下界已被改成 1（防误操作），想真不限得直接手改 config.json；streak_line_enable 是否禁言前先撂一句。注：反戳/额外发表情包的概率在 2026-09-26 提过一次又回退了 —— 真实数据里 48 小时她只回戳过 1 次，样本太小，不值得为它改默认值",
+    "enable": true,
+    "cooldown_seconds": 20,
+    "reply_probability": 0.85,
+    "busy_reply_probability": 0.1,
+    "busy_interruptible_reply_probability": 0.6,
+    "chat_proximity_seconds": 30,
+    "proximity_sticker_probability": 0.35,
+    "poke_back_probability": 0.15,
+    "initiate_probability": 0.12,
+    "streak_window_seconds": 600,
+    "streak_limit": 3,
+    "streak_ban_minutes": 3,
+    "streak_max_per_day": 3,
+    "streak_line_enable": true,
+    "mood_loss_per_hit": 3.0,
+    "mood_loss_cap": 20.0,
+    "mood_affinity_loss": 2.0,
+    "affinity_loss_max_per_day": 1
+  },
+  "sd": {
+    "enable": true,
+    "base_url": "http://127.0.0.1:7860",
+    "dir": "generated",
+    "steps": 28,
+    "cfg_scale": 6.5,
+    "sampler": "DPM++ 2M Karras",
+    "timeout_seconds": 300,
+    "model_family": "pony",
+    "quality_prefix": "score_9, score_8_up, score_7_up, source_anime, masterpiece, best quality, absurdres, highly detailed",
+    "negative": "score_6, score_5, score_4, score_3, score_2, score_1, worst quality, low quality, lowres, jpeg artifacts, blurry, watermark, text, signature, username, artist name, bad anatomy, bad proportions, bad hands, bad feet, badly drawn hands, badly drawn feet, extra limbs, extra arms, extra legs, extra digits, fewer digits, extra fingers, fewer fingers, missing fingers, fused fingers, mutated hands, malformed limbs, twisted limbs, disconnected limbs, long neck, long body, deformed, disfigured, mutilated, amputee, cropped, out of frame, transparent background, simple background",
+    "character_tags": "black hair, very long hair, straight hair, hime cut, pale skin, black cat ears, amber eyes, slit pupils, black choker, gold bell, black off-shoulder top, long sleeves, long black tail, black ribbon on tail",
+    "solo_prefix": "1girl, solo, full body",
+    "duo_prefix": "2girls, two girls, standing together, side by side",
+    "other_person": "the other girl is clearly different from the first one: different hair color, different hair length, different outfit",
+    "ban_solo": "2girls, multiple girls, multiple people, crowd, other person, stranger, male, boy, man, child",
+    "ban_duo": "3girls, 4girls, crowd, many people, male, boy, man, child",
+    "ban_scenery": "1girl, 2girls, girl, woman, person, people, human, crowd, figure, female, male, face, portrait, head, body",
+    "size": {
+      "solo": [
+        832,
+        1216
+      ],
+      "duo": [
+        1216,
+        832
+      ],
+      "scenery": [
+        1216,
+        832
+      ]
+    },
+    "hires": {
+      "enable": true,
+      "scale": 1.35,
+      "denoising_strength": 0.32,
+      "upscaler": "R-ESRGAN 4x+ Anime6B"
+    },
+    "max_per_day_private": 0,
+    "max_per_day_group": 10,
+    "max_per_day_qzone": 1,
+    "auto_post_always_image": true,
+    "state_path": "sd_state.json",
+    "pre_reply_enable": true,
+    "pre_reply_lines": [
+      "等我一下",
+      "等会儿啊",
+      "稍等，画个给你",
+      "急什么，马上",
+      "等着"
+    ],
+    "_说明": "三种模式：solo = 只有她 / duo = 她和朋友的合照 / scenery = 纯景没人。★ 外貌只在 character_tags 里定义一次、由代码统一拼接，模型不许自己写外貌 —— 这是保证「每张图里是同一个人」的关键。size 按模式给（SDXL 原生 1024，别低于它）。hires 二次放大能明显改善手部；显存不够就把它 enable 设为 false。换模型时改 model_family 并替换 quality_prefix/negative 里的 score 标签。"
+  },
+  "web": {
+    "enable": true,
+    "timeout_seconds": 12,
+    "max_results": 6,
+    "sites": [
+      "bilibili.com",
+      "zhihu.com",
+      "baike.baidu.com",
+      "sohu.com"
+    ],
+    "sites_per_search": 2,
+    "_说明": "sites 是**实测能搜到东西**的站点池（Bing 域名过滤很挑食，豆瓣/优酷/掘金/少数派/GitHub 等实测一律 0 条，已全部删除）。每次随机挑 sites_per_search 个；都没货时自动退回全网搜。"
+  },
+  "qzone": {
+    "enable": true,
+    "ugc_right": 1,
+    "max_chars": 200,
+    "auto_post_probability": 0.1,
+    "max_per_day": 1,
+    "count_manual_posts": false,
+    "min_life_chance": 0.5,
+    "state_path": "qzone_state.json",
+    "bridge_enable": true,
+    "bridge_url": "http://127.0.0.1:5700",
+    "bridge_token": "",
+    "bridge_timeout_seconds": 30,
+    "idle_qzone_probability": 0.5,
+    "like_enable": true,
+    "like_cooldown_seconds": 60,
+    "feed_cache_seconds": 30,
+    "comment_enable": true,
+    "comment_max_per_day": 10,
+    "comment_max_chars": 60,
+    "comment_once_per_post": true,
+    "comment_state_path": "qzone_comment_state.json",
+    "comment_memory_keep": 300,
+    "comment_memory_days": 90,
+    "auto_interact_enable": true,
+    "auto_interact_probability": 0.15,
+    "auto_interact_cooldown_minutes": 30,
+    "_说明": "comment_once_per_post=true 时**同一条说说只评论一次**：评过就把 tid 记进 comment_state_path，重启不作废（桥接侧不提供「这条我评过没有」的标记，只能自己记）。comment_memory_keep/comment_memory_days 决定这份名单留多久、留多少条。"
+  },
+  "rate_limit": {
+    "max_calls_per_minute": 10
+  },
+  "context": {
+    "max_chars": 4000
+  },
+  "mood": {
+    "enable": true,
+    "mood_gain_nice": 4.0,
+    "mood_loss_rude": 8.0,
+    "mood_pull_to_affinity": 0.35,
+    "_说明": "心情 = 此刻愿不愿意搭理某人，百分制 0-100。波动比好感大；每次更新都往好感靠一步（mood_pull_to_affinity），所以**好感会影响心情**，心情又会自己慢慢平复回好感那条线。 feel_tiers 是心情的档位划分（[[上限,\"说法\"], ...]，规则同 affinity.tiers，默认 8 档）—— 提示词里不再只给一个裸数字。心情刻意不加迟滞：此刻是什么就是什么。",
+    "feel_tiers": [
+      [
+        15.0,
+        "正堵得慌"
+      ],
+      [
+        28.0,
+        "很不耐烦"
+      ],
+      [
+        40.0,
+        "有点烦着"
+      ],
+      [
+        52.0,
+        "平平淡淡"
+      ],
+      [
+        64.0,
+        "还算想理"
+      ],
+      [
+        76.0,
+        "挺想搭理"
+      ],
+      [
+        88.0,
+        "心情不错"
+      ],
+      [
+        100.0,
+        "正想找人说话"
+      ]
+    ]
+  },
+  "vision": {
+    "_说明": "识图。backend：auto=云端优先失败退本地 / cloud=只走云端 / local=只走本地 / off=不看图。max_frames>1 时把动图等距抽成多张图一起发（动态表情能被看懂的关键）。max_total_images 是**抽帧之后**一轮最多发出去几张图（截断总图数，0 或负数 = 不限）：来源本来最多 3 个，3 张动图各抽 3 帧就是 9 张、云端约 9k token，被要求重答一次还会再发一遍，所以默认收到 6（按来源顺序截断，前面那张优先）。max_side_cloud 给云端留更大分辨率，max_side_local 给本地省 token。max_bytes 是单图字节上限（超了先降质重试，不再直接丢）。describe_max_tokens 是识图请求的输出上限。单位：max_frames 是单张动图最多抽几帧（张，只作用于单张动图），max_total_images 是一轮的总图数（张，抽帧后的总数按它截断，0 或负数 = 不限），max_side_cloud/max_side_local 是图片最长边的像素数，max_bytes 是字节，describe_max_tokens 是 token 数；local_probe_seconds 是本地 LM Studio 探测结果的缓存秒数。vision_enable=false 时这里是死配置（总闸先关）；vision.backend 缺失时才回退去看旧的 vision_relay。",
+    "backend": "auto",
+    "max_frames": 3,
+    "max_total_images": 6,
+    "max_side_cloud": 1568,
+    "max_side_local": 1024,
+    "max_bytes": 8000000,
+    "describe_max_tokens": 300,
+    "local_probe_seconds": 300
+  },
+  "vision_enable": true,
+  "vision_relay": true,
+  "log_level": "INFO",
+  "style_format": "（说话方式：\n- 短。一般 5~30 字，最多连着说三句；想分两条就换行。颜文字单独一行，别塞在句子中间。\n- 句尾不加句号。\n- 语气词、emoji、网络流行语和梗看语境用，别每句都挂一个。\n- 别提对方的昵称，也别 @ 人；回话就说「你」，提到不在场的人用「他」「她」「那家伙」。\n- 不解释、不总结、不补充、不展开；不写括号动作、心理旁白、场景描写。\n- 不主动说自己长什么样、在做什么动作。\n- 设定别一次倒完，随口带一句就够。\n格式长这样（别照抄，只学形状：一句一行，行尾不加句号）：\n雨天\n无聊得要命\nヽ(・∀・)ﾉ\n别写成这样：「哪儿也去不了。」「有什么需要随时告诉我哦！」）",
+  "split": {
+    "_说明": "分条发送。换行=强制分条；soft_limit_chars 之上的长句会按句意再拆；max_bubbles 限制一次最多几条；delay_seconds 是气泡间隔",
+    "enable": true,
+    "max_bubbles": 3,
+    "soft_limit_chars": 16,
+    "delay_seconds": 0.9
+  },
+  "bili": {
+    "_说明": "扫码登录后她用这个账号看视频。actions_enable 打开会真点赞/投币/收藏，有风控风险，靠 daily_action_cap 兜底。发 /bili 给她触发扫码登录；/bili状态 只查登录态。auto_login=true 时后台定期查真登录态（问 b 站 isLogin，不信本地有没有 cookie），是游客就自己开扫码并把二维码发到管理员私聊。",
+    "enable": true,
+    "timeout_seconds": 12,
+    "state_path": "bili_state.json",
+    "qr_path": "bili_qrcode.png",
+    "qr_wait_seconds": 180,
+    "auto_login": true,
+    "login_check_minutes": 60,
+    "login_retry_minutes": 10,
+    "login_check_seconds": 300,
+    "login_start_delay_seconds": 20,
+    "browse_probability": 0.5,
+    "actions_enable": true,
+    "daily_action_cap": 6,
+    "like_probability": 0.35,
+    "coin_probability": 0.15,
+    "fav_probability": 0.12
+  },
+  "cross_group": {
+    "_说明": "跨群。管理员在私聊里说「把原神群里的张三禁言 10 分钟」，她要先认群（群名册 groups.json，NapCat 连上时自动拉 get_group_list）再认人（该群成员名单，按群名片/昵称/QQ号匹配）。认不出或有歧义就只回话不动手。default_minutes 是没写分钟时的默认时长，上限仍受 ban.max_minutes 约束；member_cache_seconds 是群成员名单的缓存时长。",
+    "enable": true,
+    "groups_path": "groups.json",
+    "default_minutes": 10,
+    "member_cache_seconds": 300
+  },
+  "activity": {
+    "_说明": "她的行为流水。每 report_minutes 分钟往管理员私聊发一份小结，详情写进 dir 下的按天 markdown",
+    "enable": true,
+    "dir": "activity",
+    "report_minutes": 90,
+    "report_to_admin": true,
+    "llm_summary": true,
+    "max_buffer": 200
+  },
+  "nudge_on_ask": true,
+  "self_image": "黑色长直发，头顶一对黑猫耳，琥珀色的眼睛，脖子上戴着挂小金铃铛的黑色颈带，穿黑色露肩长袖上衣，身后一条长长的黑尾巴",
+  "affinity": {
+    "gain_nice": 2.0,
+    "loss_rude": 6.0,
+    "decay_per_day": 1.5,
+    "_说明": "好感 = 对某人的**长期印象**，百分制 0-100（50 中性）。一句话动得比心情小（gain/loss 更保守），每天往 50 回落 decay_per_day。strong_mult 是强情绪词（「我最喜欢你了」）的放大倍率；drift_* 是\"正常聊天也会慢慢攒好感\"这条路的规矩：每条 drift_gain 分、每人每天最多 drift_max_per_day 分、消息短于 drift_min_chars 字不算、并且最多养到 drift_ceiling 分（再往上得靠真的夸她/对她好）。hysteresis 是档位迟滞：好感停在边界上时要超出边界这么多分才真的换一档（防\"挺待见/很喜欢\"来回跳，0=关）。tiers 是好感的档位划分（[[这一档的上限, 说法], ...]，必须递增、最后一档盖到 100），默认 10 档；写错了会自动退回默认档位。",
+    "strong_mult": 1.8,
+    "drift_gain": 0.25,
+    "drift_max_per_day": 2.5,
+    "drift_min_chars": 6,
+    "drift_ceiling": 62.0,
+    "tiers": [
+      [
+        10.0,
+        "恨得牙痒"
+      ],
+      [
+        22.0,
+        "很反感"
+      ],
+      [
+        34.0,
+        "有点烦"
+      ],
+      [
+        45.0,
+        "不太待见"
+      ],
+      [
+        55.0,
+        "不咸不淡"
+      ],
+      [
+        66.0,
+        "还算顺眼"
+      ],
+      [
+        76.0,
+        "挺待见"
+      ],
+      [
+        86.0,
+        "很喜欢"
+      ],
+      [
+        94.0,
+        "特别在意"
+      ],
+      [
+        100.0,
+        "放在心上"
+      ]
+    ],
+    "hysteresis": 1.5
+  },
+  "self_activity": {
+    "enable": true,
+    "tick_seconds": 120,
+    "min_gap_minutes": 20,
+    "max_gap_minutes": 75,
+    "duration_minutes": [
+      15,
+      70
+    ],
+    "skip_chance": 0.25,
+    "material_keep_minutes": 90,
+    "acts": [
+      {
+        "id": "surf",
+        "name": "上网瞎逛",
+        "mood": "any",
+        "weight": 3,
+        "hint": "你在网上乱翻，翻到一堆没用的东西",
+        "reply_chance": 0.7,
+        "busy": false
+      },
+      {
+        "id": "video",
+        "name": "刷视频",
+        "mood": "good",
+        "weight": 3,
+        "hint": "你在看 b 站，一会儿笑一会儿骂",
+        "reply_chance": 0.8,
+        "busy": false
+      },
+      {
+        "id": "qzone",
+        "name": "翻空间",
+        "mood": "any",
+        "weight": 2,
+        "hint": "你在翻好友的空间，边翻边撇嘴",
+        "reply_chance": 0.75,
+        "busy": false
+      },
+      {
+        "id": "read",
+        "name": "翻旧书",
+        "mood": "calm",
+        "weight": 2,
+        "hint": "你在书店角落翻一本没意思的旧书，翻两页就走神",
+        "reply_chance": 0.45,
+        "busy": true
+      },
+      {
+        "id": "nap",
+        "name": "找个地方蜷着",
+        "mood": "bad",
+        "weight": 2,
+        "hint": "你懒得动，找了个暖和地方蜷着，眼睛半睁半闭",
+        "reply_chance": 0.3,
+        "busy": true
+      },
+      {
+        "id": "window",
+        "name": "趴窗台",
+        "mood": "calm",
+        "weight": 2,
+        "hint": "你在窗台看外面，什么也不想",
+        "reply_chance": 0.5,
+        "busy": false
+      },
+      {
+        "id": "stare",
+        "name": "发呆",
+        "mood": "bad",
+        "weight": 2,
+        "hint": "你什么也没干，就坐在那儿发呆",
+        "reply_chance": 0.4,
+        "busy": false
+      },
+      {
+        "id": "groom",
+        "name": "舔毛",
+        "mood": "calm",
+        "weight": 2,
+        "hint": "你在整理自己，谁说话都懒得搭",
+        "reply_chance": 0.4,
+        "busy": false
+      },
+      {
+        "id": "hunt",
+        "name": "盯虫子",
+        "mood": "any",
+        "weight": 2,
+        "hint": "你盯着一只虫子看了很久，尾巴尖一抖一抖",
+        "reply_chance": 0.6,
+        "busy": false
+      },
+      {
+        "id": "eat",
+        "name": "找吃的",
+        "mood": "any",
+        "weight": 2,
+        "hint": "你去厨房翻了一圈，没找到想吃的",
+        "reply_chance": 0.65,
+        "busy": false
+      },
+      {
+        "id": "mess",
+        "name": "拨东西",
+        "mood": "good",
+        "weight": 1,
+        "hint": "你刚把桌上什么东西拨到地上，正在装作无事发生",
+        "reply_chance": 0.7,
+        "busy": false
+      },
+      {
+        "id": "stretch",
+        "name": "伸懒腰",
+        "mood": "good",
+        "weight": 1,
+        "hint": "你刚睡醒，伸了个很长的懒腰",
+        "reply_chance": 0.75,
+        "busy": false
+      },
+      {
+        "id": "walk",
+        "name": "出门走走",
+        "mood": "good",
+        "weight": 2,
+        "hint": "你出门随便走走，没什么目的地",
+        "reply_chance": 0.6,
+        "busy": false
+      },
+      {
+        "id": "hide",
+        "name": "躲起来",
+        "mood": "bad",
+        "weight": 1,
+        "hint": "你找了个没人看得见的地方躲起来，不想被找到",
+        "reply_chance": 0.25,
+        "busy": true
+      },
+      {
+        "id": "watch",
+        "name": "看人",
+        "mood": "any",
+        "weight": 2,
+        "hint": "你蹲在一边看人，谁也不说话",
+        "reply_chance": 0.55,
+        "busy": false
+      },
+      {
+        "id": "snooze",
+        "name": "补觉",
+        "mood": "bad",
+        "weight": 2,
+        "hint": "你找了个背光的地方缩成一团，睡了个回笼觉",
+        "reply_chance": 0.3,
+        "busy": true
+      },
+      {
+        "id": "shelf",
+        "name": "推书",
+        "mood": "calm",
+        "weight": 2,
+        "hint": "你把书店那排书推来推去，其实一本没理",
+        "reply_chance": 0.45,
+        "busy": true
+      },
+      {
+        "id": "laundry",
+        "name": "晾衣服",
+        "mood": "any",
+        "weight": 1,
+        "hint": "你把衣服晾出去，站在旁边看了一会儿风",
+        "reply_chance": 0.6,
+        "busy": false
+      },
+      {
+        "id": "sunbeam",
+        "name": "追光",
+        "mood": "good",
+        "weight": 2,
+        "hint": "你跟着窗边那块光挪了三次位置",
+        "reply_chance": 0.7,
+        "busy": false
+      },
+      {
+        "id": "spy",
+        "name": "偷听",
+        "mood": "any",
+        "weight": 2,
+        "hint": "你趴在墙边听隔壁吵架，听得挺起劲",
+        "reply_chance": 0.65,
+        "busy": false
+      }
+    ],
+    "places": [
+      "窗台",
+      "书堆上",
+      "旧书店的角落",
+      "便利店门口",
+      "楼下花坛边",
+      "天台上",
+      "楼梯口",
+      "空纸箱里",
+      "老槐树底下",
+      "公交站牌下",
+      "谁家阳台边上",
+      "巷子深处",
+      "图书馆台阶",
+      "洗衣店门口",
+      "小区长椅",
+      "书店后门",
+      "小区快递柜旁",
+      "桥洞底下",
+      "菜市场门口",
+      "天台水箱边",
+      "废弃电话亭里",
+      "谁家门口的脚垫上",
+      "河堤栏杆边",
+      "公交车最后一排"
+    ],
+    "busy_stop_long": true,
+    "busy_act_chance": 0.1,
+    "busy_short_min_minutes": 1.0,
+    "busy_short_max_minutes": 8.0,
+    "busy_short": [
+      {
+        "id": "clip",
+        "name": "刷两个小视频",
+        "hint": "你趁空刷了一两个小视频，看完就关，没打算久留",
+        "weight": 3
+      },
+      {
+        "id": "msg",
+        "name": "扫一眼消息",
+        "hint": "你抽空扫了一眼手机，没打算认真回",
+        "weight": 2
+      },
+      {
+        "id": "stretch",
+        "name": "伸个懒腰",
+        "hint": "你抽空伸了个懒腰，尾巴甩了两下",
+        "weight": 2
+      },
+      {
+        "id": "water",
+        "name": "喝口水",
+        "hint": "你灌了口水，又回去忙",
+        "weight": 2
+      },
+      {
+        "id": "peek",
+        "name": "瞟一眼窗外",
+        "hint": "你瞟了一眼窗外，没什么好看的",
+        "weight": 2
+      }
+    ],
+    "_说明": "她自己一个人的日常（与群冷热无关）。busy_* 是\"她忙的时候\"的规矩：busy_stop_long=忙起来就把手里那件长活动打断；忙的整段时间里不再起长活动，只按 busy_act_chance 这个较低概率做点 busy_short 里的小事（时长在 busy_short_min_minutes ~ busy_short_max_minutes 分钟之间随机）。"
+  },
+  "providers": {
+    "_说明": "模型端点。这一段的出现意味着「本地/云端」不再是写死的两档 —— endpoints 想加几个加几个，chains 决定谁先答话。顶层 local / cloud 仍然生效（老配置不用改），但只要写了本段就以它为准。文档：docs/providers.md",
+    "endpoints": [
+      {
+        "_说明": "本地 LM Studio。tier=local 会强制 trust_env=false（绕过 HTTP_PROXY）",
+        "id": "local-lmstudio",
+        "provider": "lmstudio",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "model": "qwen2.5-vl-7b-instruct",
+        "tier": "local",
+        "concurrency": 1,
+        "timeout": 240,
+        "vision": true,
+        "api_key": "lm-studio"
+      },
+      {
+        "_说明": "云端 DeepSeek。密钥走环境变量，别写进这个文件",
+        "id": "cloud-deepseek",
+        "provider": "deepseek",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "tier": "cloud",
+        "timeout": 90,
+        "max_tokens": 1024,
+        "vision": false,
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "params": {
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      }
+    ],
+    "chains": {
+      "_说明": "default=日常答话，vision=识图。顺序即优先顺序，前一个挂了才试后一个",
+      "default": [
+        "local-lmstudio",
+        "cloud-deepseek"
+      ],
+      "vision": [
+        "cloud-deepseek",
+        "local-lmstudio"
+      ]
+    },
+    "plugins": {
+      "_说明": "allow_dir_scan=false 时只加载 enabled 里点名的插件（安全边界）",
+      "dir": "providers/plugins",
+      "enabled": [],
+      "allow_dir_scan": false,
+      "manifests": [
+        "providers/manifests/openai-compat.json",
+        "providers/manifests/local-servers.json",
+        "providers/manifests/cn-vendors.json"
+      ]
+    }
+  }
+}

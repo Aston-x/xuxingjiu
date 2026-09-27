@@ -1,0 +1,393 @@
+{
+  "manifest_version": 1,
+  "_readme": [
+    "云端「OpenAI 兼容」厂商的声明式定义。它们都只说 /chat/completions 这门语言，",
+    "差别只在 base_url、鉴权头、以及少数几个字段名 —— 所以一份 JSON 就能全部覆盖。",
+    "用法：在 config.json 的 providers.endpoints 里写 provider 为下面某个 name，再填 base_url + model。",
+    "例：{\"id\":\"kimi\",\"provider\":\"moonshot\",\"base_url\":\"https://api.moonshot.cn/v1\",",
+    "     \"model\":\"moonshot-v1-32k\",\"tier\":\"cloud\",\"api_key_env\":\"MOONSHOT_API_KEY\"}",
+    "本文档不预置任何密钥；api_key 一律走环境变量（api_key_env）。",
+    "加新厂商：照着拷一段改 base_url / model 即可，不用写代码。"
+  ],
+  "providers": [
+    {
+      "name": "deepseek",
+      "protocol": "declarative",
+      "display_name": "DeepSeek",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens",
+        "cache_hit": "$.usage.prompt_cache_hit_tokens",
+        "cache_miss": "$.usage.prompt_cache_miss_tokens"
+      },
+      "capabilities": {
+        "vision": false,
+        "vision_input": "none",
+        "thinking": true,
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_key": "max_tokens",
+        "max_tokens_limit": 65536,
+        "temperature_range": [0.0, 2.0],
+        "system_in_messages": true
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url 写 https://api.deepseek.com 即可（它不带 /v1）；带 /v1 也认。thinking 参数请写成端点级 params，别塞给别家。"
+    },
+    {
+      "name": "moonshot",
+      "protocol": "declarative",
+      "display_name": "Kimi（Moonshot）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_key": "max_tokens",
+        "max_tokens_limit": 131072,
+        "temperature_range": [0.0, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.moonshot.cn/v1。温度上限是 1（不是 2），越界会被夹紧。"
+    },
+    {
+      "name": "zhipu",
+      "protocol": "declarative",
+      "display_name": "智谱 GLM",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_limit": 131072,
+        "temperature_range": [0.0, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://open.bigmodel.cn/api/paas/v4"
+    },
+    {
+      "name": "dashscope",
+      "protocol": "declarative",
+      "display_name": "通义千问（DashScope 兼容模式）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "tool_calling": true,
+        "streaming": true,
+        "max_tokens_limit": 32768,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://dashscope.aliyuncs.com/compatible-mode/v1"
+    },
+    {
+      "name": "siliconflow",
+      "protocol": "declarative",
+      "display_name": "硅基流动 SiliconFlow",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "base64",
+        "tool_calling": true,
+        "max_tokens_limit": 32768
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.siliconflow.cn/v1"
+    },
+    {
+      "name": "openrouter",
+      "protocol": "declarative",
+      "display_name": "OpenRouter（聚合）",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens",
+        "cache_hit": "$.usage.prompt_tokens_details.cached_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "max_tokens_limit": 131072
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://openrouter.ai/api/v1。model 要写带斜杠的全名，如 deepseek/deepseek-chat。"
+    },
+    {
+      "name": "groq",
+      "protocol": "declarative",
+      "display_name": "Groq",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens",
+        "cache_hit": "$.usage.prompt_tokens_details.cached_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.groq.com/openai/v1。**不要**给它传 thinking 参数，会 400。"
+    },
+    {
+      "name": "xai",
+      "protocol": "declarative",
+      "display_name": "xAI Grok",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens",
+        "cache_hit": "$.usage.prompt_tokens_details.cached_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.x.ai/v1"
+    },
+    {
+      "name": "minimax",
+      "protocol": "declarative",
+      "display_name": "MiniMax",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "tool_calling": true,
+        "temperature_range": [0.01, 1.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.minimax.chat/v1。温度下限是 0.01（传 0 会被拒）。"
+    },
+    {
+      "name": "yi",
+      "protocol": "declarative",
+      "display_name": "零一万物 Yi",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.lingyiwanwu.com/v1"
+    },
+    {
+      "name": "openai-official",
+      "protocol": "declarative",
+      "display_name": "OpenAI 官方",
+      "auth": { "type": "bearer" },
+      "request": {
+        "path": "/chat/completions",
+        "method": "POST",
+        "body": {
+          "model": "$model",
+          "messages": "$messages",
+          "stream": false,
+          "temperature": "$temperature",
+          "max_tokens": "$max_tokens"
+        }
+      },
+      "response": {
+        "text": "$.choices[0].message.content",
+        "finish_reason": "$.choices[0].finish_reason"
+      },
+      "usage": {
+        "prompt": "$.usage.prompt_tokens",
+        "completion": "$.usage.completion_tokens",
+        "cache_hit": "$.usage.prompt_tokens_details.cached_tokens"
+      },
+      "capabilities": {
+        "vision": true,
+        "vision_input": "url",
+        "tool_calling": true,
+        "temperature_range": [0.0, 2.0]
+      },
+      "probe": { "path": "/models", "method": "GET", "parse": "openai_models" },
+      "_note": "base_url = https://api.openai.com/v1。o 系列 / GPT-5 系要把 max_tokens_key 改成 max_completion_tokens，在端点上写 capabilities 覆盖。"
+    }
+  ]
+}

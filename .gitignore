@@ -1,0 +1,34 @@
+# ── 依赖与虚拟环境 ──
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# ── 运行时产物 ──
+*.log
+*.pid
+state/
+_backup/
+_sdtry/
+generated/
+test_cache/
+cache/
+logs/
+
+# ── 凭据与本地配置（务必不要提交） ──
+.env
+.env.*
+config.json
+config.json.bak
+*.bak
+
+# ── 本地中间件 ──
+_patch/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

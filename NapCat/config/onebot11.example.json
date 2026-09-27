@@ -1,0 +1,39 @@
+{
+  "_readme": [
+    "OneBot v11 反向 WebSocket 配置模板。",
+    "用法：复制成 onebot11_<你的机器人QQ>.json（文件名里的 QQ 号必须替换），",
+    "把 url 的端口与 token 和 qqbot/config.json 里的 ws_port / access_token 对齐。",
+    "注意这是**反向** WS：NapCat 主动连 qqbot，所以要先启动 qqbot。"
+  ],
+  "network": {
+    "httpServers": [],
+    "httpSseServers": [],
+    "httpClients": [],
+    "websocketServers": [],
+    "websocketClients": [
+      {
+        "enable": true,
+        "name": "xuxingjiu",
+        "url": "ws://127.0.0.1:6199/ws",
+        "reportSelfMessage": false,
+        "messagePostFormat": "array",
+        "token": "",
+        "debug": false,
+        "heartInterval": 30000,
+        "reconnectInterval": 5000,
+        "verifyCertificate": true
+      }
+    ],
+    "plugins": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false,
+  "imageDownloadProxy": "",
+  "timeout": {
+    "baseTimeout": 10000,
+    "uploadSpeedKBps": 256,
+    "downloadSpeedKBps": 256,
+    "maxTimeout": 1800000
+  }
+}

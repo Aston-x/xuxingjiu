@@ -1,0 +1,14 @@
+{
+  "_readme": [
+    "NapCat WebUI 配置模板。复制成 webui.json。",
+    "★ host 已从上游默认的 \"::\" 改成 127.0.0.1 —— \"::\" 会监听所有网卡，",
+    "  在没防火墙的环境里等于把 WebUI 令牌暴露给整个局域网。",
+    "★ token 留空让 NapCat 自己生成随机值，别用弱口令。",
+    "★ autoLoginAccount 请填**你自己的机器人 QQ 号**（这里留空，不预置任何账号）。"
+  ],
+  "host": "127.0.0.1",
+  "port": 6099,
+  "token": "",
+  "loginRate": 10,
+  "autoLoginAccount": ""
+}

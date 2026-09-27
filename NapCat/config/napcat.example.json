@@ -1,0 +1,19 @@
+{
+  "_readme": "NapCat 主体配置。复制成 napcat_<你的机器人QQ>.json。各项含义见 NapCat 官方文档。",
+  "fileLog": false,
+  "consoleLog": true,
+  "fileLogLevel": "debug",
+  "consoleLogLevel": "info",
+  "packetBackend": "auto",
+  "packetServer": "",
+  "o3HookMode": 1,
+  "autoTimeSync": true,
+  "bypass": {
+    "hook": true,
+    "window": true,
+    "module": true,
+    "process": true,
+    "container": true,
+    "js": true
+  }
+}

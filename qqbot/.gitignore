@@ -1,0 +1,52 @@
+# ── 运行时状态（含个人数据，一律不入库） ──
+_backup/
+bot.log
+bot.log.*
+botboot.log
+bot_boot.log
+launcher.log
+launcher.running.json
+qzone-bridge.log
+*.log
+generated/
+stickers/
+life_state.json
+sd_state.json
+qzone_state.json
+memory.json
+group_memory.json
+mood.json
+groups.json
+qzone_comment_state.json
+bili_state.json
+state/
+
+# ── 凭据与配置 ──
+# config.json 含明文 api_key / access_token，不入库；
+# 首次使用请复制 config.example.json 改名成 config.json 再改。
+config.json
+config.json.bak
+*.bak
+.env
+.env.*
+.console-token
+
+# ── 测试临时文件 ──
+_tmp_*.json
+_tmp_*
+_tmp_iso/
+tools/_shots/
+
+# ── 登录态残留（bilibili 扫码图，重新登录会再生成） ──
+*_qrcode.png
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+_sdtry/
+tools/_sd_try.py
+
+# ── assets/ 里放的是人设参考图，要进仓库，所以别整个忽略 ──
+# （原来这里有一行 `assets/`，已移除）

@@ -1,0 +1,41 @@
+# Node
+node_modules/
+dist/
+
+# Cache / Runtime
+cache/
+.cache_deep/
+.cache_test/
+test_cache/
+test_cache_real/
+logs/
+playwright_debug.html
+bridge.log
+qzone-bridge.log
+*.log
+debug_output.txt
+latest_api_response.json
+latest_feeds_debug.json
+test.txt
+.bridge.pid
+.pid
+*.pid
+
+# Env / Secrets
+.env
+.env.*.bak
+*.bak
+_console-token
+console-token
+.state/
+
+# 本地 AI 协作配置（各人机器不一样）
+.claude/
+
+# Local backups (may contain real cookies)
+_backup/
+
+# Python (legacy)
+.venv/
+__pycache__/
+*.egg-info/

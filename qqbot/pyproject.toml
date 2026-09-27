@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xuxingjiu-qqbot"
+version = "1.0.0"
+description = "许杏玖 —— 一个带人设、记忆与独立生活轨迹的 QQ 机器人（NapCat + OneBot v11）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["qq", "chatbot", "onebot", "napcat", "llm", "persona"]
+
+# 运行时依赖与 requirements.txt 保持一致，改一处记得改另一处
+dependencies = [
+    "httpx==0.28.1",
+    "websockets==17.1",
+    "pillow==12.3.0",
+    "qrcode==8.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-name/xuxingjiu"
+
+[tool.setuptools]
+# 这是一个脚本式项目（入口是 bot.py），不打包成 wheel；这里只用于声明元数据
+packages = ["providers", "providers.adapters"]

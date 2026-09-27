@@ -1,0 +1,1178 @@
+import { QzoneClient } from '../qzone/client.js';
+import type { BridgeConfig } from './config.js';
+import { EventHub } from './hub.js';
+import {
+  buildStablePostKey,
+  buildStablePostKeyFromItem,
+  seenLookupKeysForPost,
+} from './stablePostKey.js';
+import { commentDedupMark, commentDedupSeen } from './commentDedup.js';
+import { safeInt } from './utils.js';
+import { htmlUnescape, log } from '../qzone/utils.js';
+import { processEmojis, parseEmojis, type EmojiConvertOptions } from '../qzone/emoji.js';
+import { env } from '../qzone/config/env.js';
+import { AuthError, isQzoneError } from '../qzone/infra/errors.js';
+import pLimit from 'p-limit';
+import type {
+  OneBotEvent, NormalizedItem, QzoneComment, QzoneLike,
+} from '../qzone/types.js';
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
+import { join } from 'path';
+
+// ─────────────────────────────────────────────────────────
+// helpers
+// ─────────────────────────────────────────────────────────
+function now(): number { return Math.floor(Date.now() / 1000); }
+
+/**
+ * 安全执行轮询回调：捕获异常并返回是否成功。
+ * AuthError 会被上报为 statusOk=false 但不 throw。
+ */
+async function safePoll(label: string, fn: () => Promise<void>): Promise<boolean> {
+  try {
+    await fn();
+    return true;
+  } catch (err) {
+    if (err instanceof AuthError) {
+      console.error(`[Poller] ${label}: 认证失败 — ${err.message}`);
+    } else if (isQzoneError(err)) {
+      console.error(`[Poller] ${label}: ${err.name} — ${err.message}`);
+    } else {
+      console.error(`[Poller] ${label}: ${err}`);
+    }
+    return false;
+  }
+}
+
+function makeLocalId(): string {
+  // pseudo-incremental (non-persistent over restarts)
+  return String(Date.now());
+}
+
+export function stripHtml(s: string): string {
+  return htmlUnescape(s.replace(/<[^>]+>/g, ''));
+}
+
+/** QZone CDN 图片 host 白名单（与 actions.isQzoneImageUrl 一致，避免循环依赖） */
+const QZONE_IMAGE_HOST_SUFFIXES = [
+  'qpic.cn',
+  'photo.store.qq.com',
+  'qlogo1.store.qq.com',
+  'qlogo2.store.qq.com',
+  'qzonestyle.gtimg.cn',
+];
+
+function isQzoneImageUrl(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(u.protocol)) return false;
+    const host = u.hostname.toLowerCase();
+    return QZONE_IMAGE_HOST_SUFFIXES.some(suffix => host === suffix || host.endsWith('.' + suffix));
+  } catch { return false; }
+}
+
+export function extractImages(pics: unknown): string[] {
+  if (!Array.isArray(pics)) return [];
+  const urls: string[] = [];
+  for (const p of pics) {
+    if (typeof p === 'object' && p) {
+      const obj = p as Record<string, unknown>;
+      // 优先级: url2 → url3 → url1 → smallurl → url（参照 astrbot_plugin_qzone）
+      let found = false;
+      for (const key of ['url2', 'url3', 'url1', 'smallurl', 'url']) {
+        const v = obj[key];
+        // 只接受有效的 URL（以 http 开头）
+        if (typeof v === 'string' && v.startsWith('http')) { urls.push(v); found = true; break; }
+      }
+      if (!found) {
+        // fallback: any string-valued url-like key
+        for (const v of Object.values(obj)) {
+          if (typeof v === 'string' && v.startsWith('http')) { urls.push(v); break; }
+        }
+      }
+    } else if (typeof p === 'string' && p.startsWith('http')) {
+      urls.push(p);
+    }
+  }
+  return urls;
+}
+
+/**
+ * 从说说的 video 字段提取视频播放 URL（url3）和封面（url1/pic_url）。
+ * 参照 astrbot_plugin_qzone parser.py 的视频提取逻辑。
+ * 兼容两种格式：
+ *   - emotion_cgi_msglist_v6: { url3, pic_url, url1, cover }
+ *   - feeds3Parser: { videoUrl, coverUrl, videoId }
+ */
+export function extractVideos(raw: Record<string, unknown>): { videoUrls: string[]; videoCoverUrls: string[] } {
+  const videoUrls: string[] = [];
+  const videoCoverUrls: string[] = [];
+  const videos = raw['video'] as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(videos)) return { videoUrls, videoCoverUrls };
+  for (const v of videos) {
+    // 兼容两种字段命名
+    const playUrl = String(
+      v['url3'] ?? v['video_url'] ?? v['url'] ?? v['videoUrl'] ?? ''
+    );
+    if (playUrl) videoUrls.push(playUrl);
+    const coverUrl = String(
+      v['url1'] ?? v['pic_url'] ?? v['cover'] ?? v['coverUrl'] ?? ''
+    );
+    if (coverUrl) videoCoverUrls.push(coverUrl);
+  }
+  return { videoUrls, videoCoverUrls };
+}
+
+// ─────────────────────────────────────────────────────────
+/**
+ * 从 conlist 重建内容文本。
+ * conlist 是 QZone API 的富文本数组：
+ *   type 0: @某人 (有 uin/nick 属性)
+ *   type 1: 纯文本
+ *   type 2: 含表情的文本 (如 "[em]e10271[/em]")
+ *
+ * 增强功能：
+ *   - 表情自动转换为可读名称
+ *   - @提及保留在文本中
+ */
+export function rebuildContentFromConlist(
+  conlist: Array<Record<string, unknown>>,
+  emojiMode: EmojiConvertOptions['mode'] = 'name'
+): string {
+  const parts: string[] = [];
+  for (const item of conlist) {
+    const type = Number(item['type'] ?? -1);
+    if (type === 0) {
+      // @人: 使用 nick 或 name；缺 nick 时仍保留 @ 前缀
+      const nick = String(item['nick'] ?? item['name'] ?? '');
+      parts.push(nick ? `@${nick}` : '@');
+    } else if (type === 2) {
+      // 含表情的文本: 处理表情转换
+      const con = String(item['con'] ?? item['content'] ?? '');
+      if (con) parts.push(processEmojis(con, { mode: emojiMode }));
+    } else {
+      // type 1 (纯文本) / others
+      const con = String(item['con'] ?? item['content'] ?? '');
+      if (con) parts.push(con);
+    }
+  }
+  return stripHtml(parts.join(''));
+}
+
+// NormalizedItem builder
+// ─────────────────────────────────────────────────────────
+
+/**
+ * 处理内容中的表情和@提及
+ * 1. 转换 [em]eXXX[/em] 表情为可读名称
+ * 2. 保留 @{uin,nick,who,auto} 格式供后续处理
+ */
+function processContent(content: string): string {
+  if (!content) return '';
+  // 先处理表情
+  let processed = processEmojis(content, { mode: 'name' });
+  // HTML 转义和标签清理
+  processed = stripHtml(processed);
+  return processed;
+}
+
+export function normalizeEmotion(raw: Record<string, unknown>, selfUin: string): NormalizedItem {
+  const tid = String(raw['tid'] ?? raw['cellid'] ?? '');
+  const uin = String(raw['opuin'] ?? raw['uin'] ?? raw['frienduin'] ?? selfUin);
+  const nickname = stripHtml(String(raw['nickname'] ?? raw['name'] ?? ''));
+
+  // 内容提取：有 conlist 时优先从 conlist 重建（保证表情并入正文、不丢字），否则用 content/con
+  let content: string;
+  const conlist = raw['conlist'] as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(conlist) && conlist.length > 0) {
+    content = rebuildContentFromConlist(conlist, 'name');
+  } else {
+    content = processContent(String(
+      raw['content'] ?? raw['con'] ?? raw['cellcontent'] ?? '',
+    ));
+  }
+
+  const createdTime = safeInt(raw['created_time'] ?? raw['createTime'] ?? raw['ctime'] ?? raw['pubtime'] ?? 0);
+  const cmtnum = safeInt(raw['cmtnum'] ?? raw['commentcnt'] ?? 0);
+  const fwdnum = safeInt(raw['fwdnum'] ?? raw['forwardcnt'] ?? 0);
+  let pics: string[] = extractImages(raw['pic'] ?? raw['media'] ?? []);
+  // 排除表情图 URL，避免把 [em] 渲染成的图算进「包含 N 张图片」
+  pics = pics.filter((url) => !/qzone\/em\/|gtimg\.cn.*\/em\//i.test(url));
+
+  // 视频提取
+  const { videoUrls, videoCoverUrls } = extractVideos(raw);
+  // 视频封面也加入图片列表（如果没有重复）
+  for (const cover of videoCoverUrls) {
+    if (!pics.includes(cover)) pics.push(cover);
+  }
+
+  // 转发字段：rt_tid / rt_uin / rt_uinname / rt_con 是独立顶层字段
+  // 也兼容旧的 rt_con 作为嵌套对象的情况
+  let forwardContent: string | undefined;
+  let forwardUin: string | undefined;
+  let forwardTid: string | undefined;
+  let forwardNickname: string | undefined;
+
+  const rtTid = raw['rt_tid'];
+  const rtUin = raw['rt_uin'];
+  const rtCon = raw['rt_con'];
+
+  if (typeof rtTid === 'string' && rtTid) {
+    // 独立顶层字段形式
+    forwardTid = rtTid;
+    forwardUin = String(rtUin ?? '');
+    forwardNickname = String(raw['rt_uinname'] ?? '');
+    if (typeof rtCon === 'string') {
+      forwardContent = stripHtml(rtCon);
+    } else if (typeof rtCon === 'object' && rtCon) {
+      const rc = rtCon as Record<string, unknown>;
+      forwardContent = stripHtml(String(rc['content'] ?? rc['con'] ?? ''));
+    }
+  } else if (typeof rtCon === 'object' && rtCon) {
+    // 旧的嵌套对象形式
+    const rc = rtCon as Record<string, unknown>;
+    forwardContent = stripHtml(String(rc['content'] ?? rc['con'] ?? ''));
+    forwardUin = String(rc['uin'] ?? '');
+    forwardTid = String(rc['tid'] ?? '');
+  }
+
+  const appid = String(raw['appid'] ?? '');
+  const typeid = String(raw['typeid'] ?? '');
+  const appName = String(raw['appName'] ?? '');
+  const appShareTitle = String(raw['appShareTitle'] ?? '');
+  let likeUnikey = String(raw['likeUnikey'] ?? '');
+  let likeCurkey = String(raw['likeCurkey'] ?? '');
+
+  // 预计算 likeUnikey / likeCurkey（若解析阶段未提取到）
+  if (!likeUnikey) {
+    if (typeid === '5' && forwardUin && forwardTid) {
+      // 转发帖：unikey = 原帖 URL，curkey = 转发帖 URL（抓包验证）
+      likeUnikey = `http://user.qzone.qq.com/${forwardUin}/mood/${forwardTid}`;
+      likeCurkey = `http://user.qzone.qq.com/${uin}/mood/${tid}`;
+    } else if (appid === '311' || appid === '') {
+      // 普通说说：unikey = curkey = mood URL
+      likeUnikey = `http://user.qzone.qq.com/${uin}/mood/${tid}`;
+      likeCurkey = likeUnikey;
+    }
+    // app 分享（appid=202 等）的 likeUnikey 由 feeds3Parser 提取，若未提取到则留空
+  }
+
+  return {
+    tid, uin, nickname, content, createdTime, cmtnum, fwdnum, pics,
+    videos: videoUrls, forwardContent, forwardUin, forwardTid, forwardNickname,
+    appid, typeid, appName, appShareTitle, likeUnikey, likeCurkey,
+  };
+}
+
+export function normalizeComment(raw: Record<string, unknown>): QzoneComment {
+  const commentId = String(raw['commentid'] ?? raw['comment_id'] ?? raw['id'] ?? '');
+  const uin = String(raw['uin'] ?? raw['commentuin'] ?? '');
+  const nickname = stripHtml(String(raw['name'] ?? raw['nick'] ?? ''));
+
+  // 评论内容提取：优先 content/con 字段，支持 conlist 重建
+  let content: string;
+  const rawContent = raw['content'] ?? raw['con'] ?? '';
+  if (typeof rawContent === 'string' && rawContent) {
+    content = processContent(rawContent);
+  } else if (Array.isArray(raw['conlist'])) {
+    content = rebuildContentFromConlist(raw['conlist'] as Array<Record<string, unknown>>, 'name');
+  } else {
+    content = '';
+  }
+
+  const createdTime = safeInt(raw['createtime'] ?? raw['create_time'] ?? raw['time'] ?? 0);
+  const isReply = !!(raw['is_reply'] ?? raw['isReply']);
+  const replyToUin = raw['reply_to_uin'] != null ? String(raw['reply_to_uin']) : (raw['replyToUin'] != null ? String(raw['replyToUin']) : undefined);
+  const replyToNickname = raw['reply_to_nickname'] != null ? stripHtml(String(raw['reply_to_nickname'])) : (raw['replyToNickname'] != null ? stripHtml(String(raw['replyToNickname'])) : undefined);
+  const replyToCommentId = raw['reply_to_comment_id'] != null ? String(raw['reply_to_comment_id']) : (raw['replyToCommentId'] != null ? String(raw['replyToCommentId']) : undefined);
+  const parentCommentId = raw['parent_comment_id'] != null ? String(raw['parent_comment_id']) : (raw['parentCommentId'] != null ? String(raw['parentCommentId']) : undefined);
+  const pic = Array.isArray(raw['pic']) ? (raw['pic'] as string[]) : undefined;
+  const seqRaw = raw['_feeds3_seq'];
+  const feeds3ParseSeq =
+    typeof seqRaw === 'number' && Number.isFinite(seqRaw) ? seqRaw : undefined;
+  return {
+    commentId, uin, nickname, content, createdTime,
+    ...(isReply && { isReply: true }),
+    ...(replyToUin && { replyToUin }),
+    ...(replyToNickname && { replyToNickname }),
+    ...(replyToCommentId && { replyToCommentId }),
+    ...(parentCommentId && { parentCommentId }),
+    ...(pic && pic.length > 0 && { pic }),
+    ...(feeds3ParseSeq != null && { feeds3ParseSeq }),
+  };
+}
+
+export function normalizeLike(raw: Record<string, unknown>): QzoneLike {
+  const uin = String(raw['uin'] ?? raw['fuin'] ?? '');
+  const nickname = stripHtml(String(raw['name'] ?? raw['nick'] ?? ''));
+  const createdTime = safeInt(raw['time'] ?? raw['likeTime'] ?? 0);
+  return { uin, nickname, createdTime };
+}
+
+// ─────────────────────────────────────────────────────────
+// OneBotEvent builders
+// ─────────────────────────────────────────────────────────
+/** 已知 appid → 中文名映射（appid 来自 feeds3 HTML）*/
+const APPID_LABELS: Record<string, string> = {
+  '311':  '说说',
+  '2':    '相册',
+  '4':    '转发',
+  '202':  '网易云音乐',
+  '217':  '点赞记录',
+  '2160': 'QQ音乐',
+  '268':  'QQ音乐',
+  '3168': '哔哩哔哩',
+};
+
+const MAX_IMAGE_DATA_PER_EVENT = 3;
+
+async function buildPostEvent(
+  item: NormalizedItem,
+  selfId: string,
+  opts?: { client: QzoneClient; attachImageData: boolean; maxPics: number },
+  meta?: { stablePostKey?: string; authorUin?: string; cellid?: string },
+): Promise<OneBotEvent> {
+  const segments: Record<string, unknown>[] = [];
+
+  // 第三方应用分享：前缀标签
+  const appLabel = item.appid && item.appid !== '311'
+    ? (APPID_LABELS[item.appid] ?? item.appName ?? `App(${item.appid})`)
+    : '';
+
+  if (appLabel) segments.push({ type: 'text', data: { text: `[${appLabel}] ` } });
+  if (item.content) segments.push({ type: 'text', data: { text: item.content } });
+  // 应用分享标题（歌曲名/视频标题等），仅当与 content 不同时附加
+  if (item.appShareTitle && item.appShareTitle !== item.content) {
+    segments.push({ type: 'text', data: { text: item.content ? `\n${item.appShareTitle}` : item.appShareTitle } });
+  }
+  // 转发内容作为额外文本段
+  if (item.forwardContent) {
+    const fwdPrefix = item.forwardNickname ? `[转发自 ${item.forwardNickname}] ` : '[转发] ';
+    segments.push({ type: 'text', data: { text: `\n${fwdPrefix}${item.forwardContent}` } });
+  }
+  if (opts?.attachImageData && opts?.client && item.pics.length > 0) {
+    let attached = 0;
+    for (const url of item.pics) {
+      if (attached >= opts.maxPics) break;
+      if (!isQzoneImageUrl(url)) {
+        segments.push({ type: 'image', data: { url } });
+        continue;
+      }
+      try {
+        const { data } = await opts.client.fetchImageWithAuth(url);
+        segments.push({ type: 'image', data: { url, file: 'base64://' + data.toString('base64') } });
+        attached++;
+      } catch {
+        segments.push({ type: 'image', data: { url } });
+      }
+    }
+  } else {
+    for (const url of item.pics) segments.push({ type: 'image', data: { url } });
+  }
+  if (item.videos) {
+    for (const url of item.videos) segments.push({ type: 'video', data: { url } });
+  }
+
+  const ev: OneBotEvent = {
+    time: item.createdTime || now(),
+    self_id: safeInt(selfId),
+    post_type: 'message',
+    message_type: 'private',
+    sub_type: 'friend',
+    message_id: safeInt(item.tid) || safeInt(makeLocalId()),
+    user_id: safeInt(item.uin),
+    message: segments,
+    raw_message: item.content,
+    font: 0,
+    sender: { user_id: safeInt(item.uin), nickname: item.nickname },
+    // extra
+    _tid: item.tid,
+    _uin: item.uin,
+    _abstime: item.createdTime,
+    _cmtnum: item.cmtnum,
+    _fwdnum: item.fwdnum,
+    _pics: item.pics,
+    _videos: item.videos ?? [],
+    _forward_content: item.forwardContent,
+    _forward_uin: item.forwardUin,
+    _forward_tid: item.forwardTid,
+    _forward_nickname: item.forwardNickname,
+    _appid: item.appid ?? '',
+    _typeid: item.typeid ?? '',
+    _app_name: item.appName ?? '',
+    _app_share_title: item.appShareTitle ?? '',
+    _like_unikey: item.likeUnikey ?? '',
+    _like_curkey: item.likeCurkey ?? '',
+  };
+  const rec = ev as Record<string, unknown>;
+  if (meta?.stablePostKey) rec['_stable_post_key'] = meta.stablePostKey;
+  if (meta?.authorUin) rec['_author_uin'] = meta.authorUin;
+  if (meta?.cellid) rec['_cellid'] = meta.cellid;
+  return ev;
+}
+
+function buildCommentEvent(comment: QzoneComment, postUin: string, postTid: string, selfId: string): OneBotEvent {
+  const ev: OneBotEvent = {
+    time: comment.createdTime || now(),
+    self_id: safeInt(selfId),
+    post_type: 'notice',
+    notice_type: 'qzone_comment',
+    user_id: safeInt(comment.uin),
+    sender_name: comment.nickname,
+    comment_id: comment.commentId,
+    comment_content: comment.content,
+    post_uin: safeInt(postUin),
+    post_tid: postTid,
+  };
+  if (comment.isReply) ev._is_reply = true;
+  if (comment.replyToUin) ev._reply_to_uin = comment.replyToUin;
+  if (comment.replyToNickname) ev._reply_to_nickname = comment.replyToNickname;
+  if (comment.replyToCommentId) ev._reply_to_comment_id = comment.replyToCommentId;
+  if (comment.parentCommentId) ev._parent_comment_id = comment.parentCommentId;
+  if (comment.pic?.length) ev._comment_pic = comment.pic;
+  return ev;
+}
+
+function buildLikeEvent(like: QzoneLike, postUin: string, postTid: string, selfId: string): OneBotEvent {
+  return {
+    time: like.createdTime || now(),
+    self_id: safeInt(selfId),
+    post_type: 'notice',
+    notice_type: 'qzone_like',
+    user_id: safeInt(like.uin),
+    sender_name: like.nickname,
+    post_uin: safeInt(postUin),
+    post_tid: postTid,
+  };
+}
+
+function buildHeartbeatEvent(selfId: string, status: Record<string, unknown>): OneBotEvent {
+  return {
+    time: now(),
+    self_id: safeInt(selfId),
+    post_type: 'meta_event',
+    meta_event_type: 'heartbeat',
+    status,
+    interval: 30000,
+  };
+}
+
+// ─────────────────────────────────────────────────────────
+// EventPoller
+// ─────────────────────────────────────────────────────────
+export class EventPoller {
+  private static readonly COMMENT_FETCH_LIMIT_INITIAL = 50;
+  private static readonly COMMENT_FETCH_LIMIT_STEADY = 20;
+  private static readonly COMMENT_CACHE_MAX_AGE_SEC = 75;
+
+  private running = false;
+  private mainTimer: ReturnType<typeof setTimeout> | null = null;
+  private commentTimer: ReturnType<typeof setTimeout> | null = null;
+  private likeTimer: ReturnType<typeof setTimeout> | null = null;
+  private friendFeedTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private seenPostTids = new Set<string>();
+  private seenCommentIds = new Map<string, Set<string>>();  // tid → commentIds
+  private seenLikeUins = new Map<string, Set<string>>();    // tid → uins
+  private pendingLikeUsers = new Map<string, Array<{ uin: string; nickname: string }>>(); // tid → 待匹配用户列表
+  private commentWarmTids = new Set<string>();
+  private trackTids: Set<string> = new Set();
+  private knownCounts = new Map<string, { comment: number; like: number }>();  // tid → counts from qz_opcnt2
+  private lastError = 0;
+  private backoff = 0;
+  private statusOk = false;
+  /** 运行统计（仅供控制台读取） */
+  private startedAt = 0;
+  private lastHeartbeatAt = 0;
+  /** 最近见到的说说，只存安全子集（不含可能带鉴权参数的图片 URL） */
+  private recentPosts: Array<Record<string, unknown>> = [];
+  private static readonly RECENT_POSTS_MAX = 50;
+  private stats = {
+    main: { lastRunAt: 0, runCount: 0, failCount: 0, ok: false },
+    comments: { lastRunAt: 0, runCount: 0, failCount: 0, ok: false },
+    likes: { lastRunAt: 0, runCount: 0, failCount: 0, ok: false },
+    friendFeeds: { lastRunAt: 0, runCount: 0, failCount: 0, ok: false },
+  };
+  /** 防抖写入 seen_interactive_state.json，避免每帖一次写盘 */
+  private interactiveSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly client: QzoneClient,
+    private readonly hub: EventHub,
+    private readonly config: BridgeConfig,
+  ) {}
+
+  private logEventDebug(msg: string): void {
+    if (this.config.eventDebug) log('DEBUG', msg);
+  }
+
+  private get seenTidsFile(): string {
+    return join(this.config.cachePath, 'seen_post_tids.json');
+  }
+
+  private loadSeenTids(): void {
+    try {
+      mkdirSync(this.config.cachePath, { recursive: true });
+      const raw = readFileSync(this.seenTidsFile, 'utf-8');
+      const arr = JSON.parse(raw) as string[];
+      for (const t of arr) this.seenPostTids.add(t);
+    } catch { /* 首次运行或文件不存在，忽略 */ }
+  }
+
+  private saveSeenTids(): void {
+    try {
+      // 最多保留最近 2000 条，防止无限增长
+      const arr = [...this.seenPostTids].slice(-2000);
+      writeFileSync(this.seenTidsFile, JSON.stringify(arr), 'utf-8');
+    } catch { /* 忽略写入错误 */ }
+  }
+
+  /** 合并 canonical + 历史兼容键，供 seen 查询与持久化 */
+  private markSeenPostItem(item: NormalizedItem, raw: Record<string, unknown>): void {
+    if (!item.tid || !item.uin) return;
+    for (const k of seenLookupKeysForPost(item, raw)) {
+      this.seenPostTids.add(k);
+    }
+  }
+
+  private flushSeenTidsImmediate(): void {
+    this.saveSeenTids();
+  }
+
+  private get interactiveStateFile(): string {
+    return join(this.config.cachePath, 'seen_interactive_state.json');
+  }
+
+  /** 重启后恢复已见评论/点赞与计数，避免把历史当成新事件重复推送 */
+  private loadInteractiveState(): void {
+    try {
+      const raw = readFileSync(this.interactiveStateFile, 'utf-8');
+      const o = JSON.parse(raw) as {
+        v?: number;
+        comments?: Record<string, string[]>;
+        likes?: Record<string, string[]>;
+        counts?: Record<string, { comment: number; like: number }>;
+      };
+      if (o.comments) {
+        for (const [tid, ids] of Object.entries(o.comments)) {
+          if (!ids?.length) continue;
+          if (!this.seenCommentIds.has(tid)) this.seenCommentIds.set(tid, new Set());
+          for (const id of ids) this.seenCommentIds.get(tid)!.add(id);
+        }
+      }
+      if (o.likes) {
+        for (const [tid, uins] of Object.entries(o.likes)) {
+          if (!uins?.length) continue;
+          if (!this.seenLikeUins.has(tid)) this.seenLikeUins.set(tid, new Set());
+          for (const u of uins) this.seenLikeUins.get(tid)!.add(u);
+        }
+      }
+      if (o.counts) {
+        for (const [tid, c] of Object.entries(o.counts)) {
+          const comment = Math.max(0, Number(c?.comment) || 0);
+          const like = Math.max(0, Number(c?.like) || 0);
+          this.knownCounts.set(tid, { comment, like });
+        }
+      }
+    } catch { /* 首次运行或文件不存在 */ }
+  }
+
+  private flushInteractiveStateToDisk(): void {
+    try {
+      mkdirSync(this.config.cachePath, { recursive: true });
+      const comments: Record<string, string[]> = {};
+      for (const [tid, set] of this.seenCommentIds) {
+        if (set.size > 0) comments[tid] = [...set];
+      }
+      const likes: Record<string, string[]> = {};
+      for (const [tid, set] of this.seenLikeUins) {
+        if (set.size > 0) likes[tid] = [...set];
+      }
+      const counts: Record<string, { comment: number; like: number }> = {};
+      for (const [tid, c] of this.knownCounts) {
+        counts[tid] = { comment: c.comment, like: c.like };
+      }
+      const payload = { v: 1 as const, comments, likes, counts };
+      const tmp = `${this.interactiveStateFile}.tmp`;
+      writeFileSync(tmp, JSON.stringify(payload), 'utf-8');
+      renameSync(tmp, this.interactiveStateFile);
+    } catch (e) {
+      console.error('[Poller] flushInteractiveStateToDisk failed:', e);
+    }
+  }
+
+  private requestInteractiveStateSave(): void {
+    if (this.interactiveSaveTimer) clearTimeout(this.interactiveSaveTimer);
+    this.interactiveSaveTimer = setTimeout(() => {
+      this.interactiveSaveTimer = null;
+      this.flushInteractiveStateToDisk();
+    }, 1500);
+  }
+
+  private isPostSeenItem(item: NormalizedItem, raw: Record<string, unknown>): boolean {
+    if (!item.tid || !item.uin) return true;
+    return seenLookupKeysForPost(item, raw).some((k) => this.seenPostTids.has(k));
+  }
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.startedAt = Date.now();
+    // 加载持久化的已见 tid，防止重启后重复推送
+    this.loadSeenTids();
+    this.loadInteractiveState();
+    // add seeded tids
+    for (const tid of this.hub.getSeedTids()) this.trackTids.add(tid);
+
+    // 主轮询：我的说说
+    this.scheduleMain(0);
+    // 独立评论轮询
+    this.scheduleComments(this.config.commentPollInterval * 1000);
+    // 独立点赞轮询
+    this.scheduleLikes(this.config.likePollInterval * 1000);
+    // 独立好友动态轮询
+    this.scheduleFriendFeeds(this.config.friendFeedPollInterval * 1000);
+    // 心跳
+    this.heartbeatTimer = setInterval(() => this.emitHeartbeat(), 30_000);
+    // Cookie 保活（每 600 秒，参照 OpenCamwall）
+    this.keepaliveTimer = setInterval(() => this.keepaliveCookie(), 600_000);
+  }
+
+  stop(): void {
+    this.running = false;
+    if (this.mainTimer) { clearTimeout(this.mainTimer); this.mainTimer = null; }
+    if (this.commentTimer) { clearTimeout(this.commentTimer); this.commentTimer = null; }
+    if (this.likeTimer) { clearTimeout(this.likeTimer); this.likeTimer = null; }
+    if (this.friendFeedTimer) { clearTimeout(this.friendFeedTimer); this.friendFeedTimer = null; }
+    if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+    if (this.interactiveSaveTimer) {
+      clearTimeout(this.interactiveSaveTimer);
+      this.interactiveSaveTimer = null;
+    }
+    this.flushInteractiveStateToDisk();
+  }
+
+  // ── 独立定时器调度 ──────────────────────────────
+
+  /** 添加随机抖动：±20% 的随机偏移 */
+  private addJitter(delayMs: number): number {
+    const jitterFactor = 0.8 + Math.random() * 0.4; // 0.8 ~ 1.2
+    return Math.round(delayMs * jitterFactor);
+  }
+
+  /** 记一次轮询执行，供控制台展示 */
+  private notePollRun(kind: 'main' | 'comments' | 'likes' | 'friendFeeds', ok: boolean): void {
+    const s = this.stats[kind];
+    s.lastRunAt = Date.now();
+    s.runCount += 1;
+    s.ok = ok;
+    if (!ok) s.failCount += 1;
+  }
+
+  /** 记一条最近见到的说说（只存安全子集，避免图片 URL 里的鉴权参数外泄） */
+  private noteRecentPost(item: NormalizedItem): void {
+    if (!item.tid) return;
+    if (this.recentPosts.some((p) => p['tid'] === item.tid)) return;
+    this.recentPosts.push({
+      tid: item.tid,
+      uin: item.uin ?? '',
+      nickname: item.nickname,
+      content: item.content.slice(0, 200),
+      createdTime: item.createdTime,
+      cmtnum: item.cmtnum,
+      picsCount: item.pics.length,
+    });
+    if (this.recentPosts.length > EventPoller.RECENT_POSTS_MAX) {
+      this.recentPosts.splice(0, this.recentPosts.length - EventPoller.RECENT_POSTS_MAX);
+    }
+  }
+
+  private scheduleMain(delayMs: number): void {
+    if (!this.running) return;
+    this.mainTimer = setTimeout(async () => {
+      const ok = await safePoll('main', () => this.pollMyPosts());
+      this.notePollRun('main', ok);
+      if (ok) {
+        this.statusOk = true;
+        this.backoff = 0;
+      } else {
+        this.statusOk = false;
+        this.lastError = now();
+        this.backoff = Math.min((this.backoff || 30) * 2, 300);
+      }
+      const nextDelay = this.backoff > 0 ? this.backoff * 1000 : this.config.pollInterval * 1000;
+      this.scheduleMain(this.addJitter(nextDelay));
+    }, delayMs);
+  }
+
+  private scheduleComments(delayMs: number): void {
+    if (!this.running || !this.config.emitCommentEvents) return;
+    this.commentTimer = setTimeout(async () => {
+      let ok = true;
+      if (this.client.loggedIn) {
+        const selfId = this.client.qqNumber!;
+        const limit = pLimit(3);
+        const results = await Promise.all([...this.trackTids].map(tid =>
+          limit(() => safePoll(`comments/${tid.slice(0, 8)}`, () => this.pollComments(selfId, tid))),
+        ));
+        ok = results.every(Boolean);
+        this.requestInteractiveStateSave();
+      }
+      this.notePollRun('comments', ok);
+      this.scheduleComments(this.addJitter(this.config.commentPollInterval * 1000));
+    }, delayMs);
+  }
+
+  private scheduleLikes(delayMs: number): void {
+    if (!this.running || !this.config.emitLikeEvents) return;
+    this.likeTimer = setTimeout(async () => {
+      let ok = true;
+      if (this.client.loggedIn) {
+        const selfId = this.client.qqNumber!;
+        const limit = pLimit(3);
+        const results = await Promise.all([...this.trackTids].map(tid =>
+          limit(() => safePoll(`likes/${tid.slice(0, 8)}`, () => this.pollLikes(selfId, tid))),
+        ));
+        ok = results.every(Boolean);
+        this.requestInteractiveStateSave();
+      }
+      this.notePollRun('likes', ok);
+      this.scheduleLikes(this.addJitter(this.config.likePollInterval * 1000));
+    }, delayMs);
+  }
+
+  private scheduleFriendFeeds(delayMs: number): void {
+    if (!this.running || !this.config.emitFriendFeedEvents) return;
+    this.friendFeedTimer = setTimeout(async () => {
+      let ok = true;
+      if (this.client.loggedIn) {
+        ok = await safePoll('friendFeeds', () => this.pollFriendFeeds());
+      }
+      this.notePollRun('friendFeeds', ok);
+      this.scheduleFriendFeeds(this.addJitter(this.config.friendFeedPollInterval * 1000));
+    }, delayMs);
+  }
+
+  // ── Cookie 保活 & 自动重登 ──────────────────────────────
+  private reloginLock = false;
+  private keepaliveFailCount = 0;
+  private static readonly KEEPALIVE_FAIL_THRESHOLD = 3;
+  /** 静默续期间隔（秒），默认 4h */
+  private static readonly REFRESH_INTERVAL = 4 * 3600;
+
+  private async keepaliveCookie(): Promise<void> {
+    if (!this.running || !this.client.loggedIn) return;
+
+    // ── 定期静默续期 ──
+    // 每隔 REFRESH_INTERVAL，用 headless Playwright 刷新 Cookie（不弹窗、不扫码）
+    const secSinceRefresh = this.client.secondsSinceLastRefresh;
+    if (secSinceRefresh >= EventPoller.REFRESH_INTERVAL) {
+      console.error(`[Poller] 距上次续期 ${Math.round(secSinceRefresh)}s，触发静默续期...`);
+      try {
+        const ok = await this.client.refreshSession();
+        if (ok) {
+          console.error(`[Poller] ✓ 静默续期成功 — Cookie 已刷新，.env 已同步，下次续期 ${EventPoller.REFRESH_INTERVAL}s 后`);
+          this.keepaliveFailCount = 0;
+          return;
+        }
+        console.error('[Poller] ✗ 静默续期失败（Cookie 可能已过期），将走探针校验');
+      } catch (err) {
+        console.error('[Poller] ✗ 静默续期异常:', err);
+      }
+    }
+
+    // ── 常规探针校验 ──
+    try {
+      const valid = await this.client.validateSession();
+      if (valid) {
+        this.keepaliveFailCount = 0;
+        return;
+      }
+      this.keepaliveFailCount++;
+      console.error(
+        `[Poller] Cookie keepalive: probe failed (${this.keepaliveFailCount}/${EventPoller.KEEPALIVE_FAIL_THRESHOLD})`,
+      );
+      if (this.keepaliveFailCount >= EventPoller.KEEPALIVE_FAIL_THRESHOLD) {
+        console.error('[Poller] Consecutive failures hit threshold, attempting re-login...');
+        this.statusOk = false;
+        this.keepaliveFailCount = 0;
+        await this.attemptRelogin();
+      }
+    } catch (err) {
+      console.error('[Poller] Cookie keepalive error:', err);
+    }
+  }
+
+  /**
+   * 自动重登录。优先级：
+   * 1. 静默续期（headless Playwright，无需扫码）
+   * 2. 环境变量 Cookie
+   * 3. Playwright QR 扫码
+   * 4. ptlogin 协议 QR 扫码
+   */
+  async attemptRelogin(): Promise<boolean> {
+    if (this.reloginLock) {
+      console.error('[Poller] re-login already in progress, skipping');
+      return false;
+    }
+    this.reloginLock = true;
+    try {
+      // 方法 1: 静默续期（不 logout，保留现有 Cookie 让 Playwright 刷新）
+      console.error('[Poller] 尝试静默续期（不弹窗）...');
+      try {
+        const refreshOk = await this.client.refreshSession();
+        if (refreshOk) {
+          const valid = await this.client.validateSession();
+          if (valid) {
+            console.error(`[Poller] 静默续期成功，QQ号: ${this.client.qqNumber}`);
+            this.statusOk = true;
+            return true;
+          }
+        }
+      } catch (e) {
+        console.error('[Poller] 静默续期失败:', e);
+      }
+
+      // 方法 2: 环境变量 Cookie
+      const cookieStr = env.cookieString;
+      if (cookieStr) {
+        console.error('[Poller] 尝试使用环境变量 Cookie 重新登录...');
+        try {
+          this.client.logout();
+          await this.client.loginWithCookieString(cookieStr);
+          if (this.client.loggedIn) {
+            const valid = await this.client.validateSession(true);
+            if (valid) {
+              console.error(`[Poller] 环境变量 Cookie 重登成功，QQ号: ${this.client.qqNumber}`);
+              this.statusOk = true;
+              return true;
+            }
+          }
+        } catch (e) {
+          console.error('[Poller] 环境变量 Cookie 重登失败:', e);
+        }
+      }
+
+      // 方法 3: Playwright QR 扫码（最后手段）
+      this.client.logout();
+      console.error('[Poller] 启动 Playwright 浏览器重新登录...');
+      await this.client.loginWithPlaywright();
+      if (this.client.loggedIn) {
+        console.error(`[Poller] 重新登录成功，QQ号: ${this.client.qqNumber}`);
+        this.statusOk = true;
+        return true;
+      }
+      console.error('[Poller] 重新登录失败');
+      return false;
+    } catch (err) {
+      console.error('[Poller] re-login error:', err);
+      return false;
+    } finally {
+      this.reloginLock = false;
+    }
+  }
+
+  // ── 各轮询任务 ──────────────────────────────
+
+  private async pollMyPosts(): Promise<void> {
+    if (!this.client.loggedIn) return;
+    const selfId = this.client.qqNumber!;
+
+    if (!this.config.emitMessageEvents) return;
+
+    const items: NormalizedItem[] = [];
+    let rawList: Record<string, unknown>[] = [];
+    try {
+      const res = await this.client.getEmotionList(selfId, 0, 20);
+      rawList = Array.isArray(res['msglist']) ? (res['msglist'] as Record<string, unknown>[]) : [];
+      for (const r of rawList) items.push(normalizeEmotion(r, selfId));
+    } catch { /* skip */ }
+
+    this.logEventDebug(`[Poller:DEBUG] pollMyPosts got ${items.length} items, seenTids=${this.seenPostTids.size}, trackTids=${this.trackTids.size}`);
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]!;
+      const r = rawList[i];
+      if (!item.tid || !r) continue;
+      this.cacheNormalizedItem(item);
+      this.noteRecentPost(item);
+      this.trackTids.add(item.tid);
+      const isNew = !this.isPostSeenItem(item, r);
+      this.logEventDebug(`[Poller:DEBUG] item tid=${item.tid?.slice(0,16)}, isNew=${isNew}`);
+      if (isNew) {
+        const sk = buildStablePostKeyFromItem(item) || buildStablePostKey(r);
+        const event = await buildPostEvent(item, selfId, {
+          client: this.client,
+          attachImageData: this.config.attachImageDataInEvents,
+          maxPics: MAX_IMAGE_DATA_PER_EVENT,
+        }, sk ? {
+          stablePostKey: sk,
+          authorUin: item.uin ?? selfId,
+          cellid: String(r['cellid'] ?? ''),
+        } : undefined);
+        this.logEventDebug(`[Poller:DEBUG] publishing event type=${event.post_type}`);
+        await this.hub.publish(event);
+        this.markSeenPostItem(item, r);
+        this.flushSeenTidsImmediate();
+        this.logEventDebug(`[Poller:DEBUG] publish done, subscribers=${this.hub.subscriberCount()}`);
+        if (this.config.eventDebug) {
+          log('INFO', `[push][seen] myPosts keys=${seenLookupKeysForPost(item, r).join(',')}`);
+        }
+      }
+    }
+
+    this._pruneTrackingDicts(items.map(i => i.tid).filter((t): t is string => t !== null));
+    this.requestInteractiveStateSave();
+  }
+
+  private async pollFriendFeeds(): Promise<void> {
+    if (!this.client.loggedIn) return;
+    const selfId = this.client.qqNumber!;
+    try {
+      const res = await this.client.getFriendFeeds('', 20);
+      const raw = Array.isArray(res['msglist']) ? (res['msglist'] as Record<string, unknown>[]) : [];
+      for (const r of raw) {
+        const item = normalizeEmotion(r, selfId);
+        if (!item.tid || !item.uin) continue;
+        this.cacheNormalizedItem(item);
+        // 好友流常混入当前用户自己的动态；已与 pollMyPosts 重复，双开时会推两次
+        if (this.config.emitMessageEvents && item.uin === selfId) {
+          this.logEventDebug(
+            `[Poller:DEBUG] friendFeeds skip own uin=tid ${item.tid?.slice(0, 20)} (pollMyPosts 已管)`,
+          );
+          continue;
+        }
+        if (this.isPostSeenItem(item, r)) continue;
+        const sk = buildStablePostKeyFromItem(item) || buildStablePostKey(r);
+        const event = await buildPostEvent(item, selfId, {
+          client: this.client,
+          attachImageData: this.config.attachImageDataInEvents,
+          maxPics: MAX_IMAGE_DATA_PER_EVENT,
+        }, sk ? {
+          stablePostKey: sk,
+          authorUin: item.uin,
+          cellid: String(r['cellid'] ?? ''),
+        } : undefined);
+        (event as Record<string, unknown>)['_from_friend'] = true;
+        await this.hub.publish(event);
+        this.markSeenPostItem(item, r);
+        this.flushSeenTidsImmediate();
+        if (this.config.eventDebug) {
+          log('INFO', `[push][seen] friendFeeds keys=${seenLookupKeysForPost(item, r).join(',')}`);
+        }
+      }
+    } catch { /* skip */ }
+    this.requestInteractiveStateSave();
+  }
+
+  private cacheNormalizedItem(item: NormalizedItem): void {
+    if (!item.tid) return;
+    this.client.cachePostMeta(item.tid, {
+      uin: item.uin ?? '',
+      appid: item.appid ?? '311',
+      typeid: item.typeid ?? '0',
+      likeUnikey: item.likeUnikey ?? '',
+      likeCurkey: item.likeCurkey ?? '',
+      abstime: item.createdTime,
+    });
+    this.seedKnownCommentCount(item.tid, item.cmtnum);
+  }
+
+  private seedKnownCommentCount(tid: string, count: number): void {
+    const safeCount = Math.max(0, count || 0);
+    const existing = this.knownCounts.get(tid);
+    if (existing) {
+      existing.comment = Math.max(existing.comment, safeCount);
+      return;
+    }
+    this.knownCounts.set(tid, { comment: safeCount, like: 0 });
+  }
+
+  private async pollComments(selfUin: string, tid: string): Promise<void> {
+    const seenForTid = this.seenCommentIds.get(tid);
+    const isWarm = this.commentWarmTids.has(tid) || !!(seenForTid && seenForTid.size > 0);
+    const fetchLimit = isWarm
+      ? EventPoller.COMMENT_FETCH_LIMIT_STEADY
+      : EventPoller.COMMENT_FETCH_LIMIT_INITIAL;
+    const res = await this.client.getCommentsBestEffort(selfUin, tid, fetchLimit, 0, {
+      forceRefresh: !isWarm,
+      maxCacheAgeSec: EventPoller.COMMENT_CACHE_MAX_AGE_SEC,
+    });
+    const rawComments: Record<string, unknown>[] = [];
+
+    for (const key of ['commentlist', 'comment_list', 'data', 'comments']) {
+      const v = res[key];
+      if (Array.isArray(v)) { rawComments.push(...(v as Record<string, unknown>[])); break; }
+    }
+
+    this.logEventDebug(`[Poller:DEBUG] pollComments tid=${tid.slice(0,8)} got ${rawComments.length} comments`);
+    if (rawComments.length > 0) {
+      this.commentWarmTids.add(tid);
+      this.seedKnownCommentCount(tid, rawComments.length);
+      for (const raw of rawComments) {
+        const comment = normalizeComment(raw);
+        if (!comment.commentId) continue;
+        if (!this.seenCommentIds.has(tid)) this.seenCommentIds.set(tid, new Set());
+        const seenSet = this.seenCommentIds.get(tid)!;
+        const isNew = !commentDedupSeen(seenSet, tid, comment);
+        this.logEventDebug(`[Poller:DEBUG] comment id=${comment.commentId.slice(0, 16)}, isNew=${isNew}`);
+        if (isNew) {
+          commentDedupMark(seenSet, tid, comment);
+          // 本人发的评论不推送：否则 Bot 自动回复 → 产生新评论 → 再推送 → 死循环
+          if (String(comment.uin) === String(selfUin)) {
+            this.logEventDebug(`[Poller:DEBUG] skip publish own comment id=${comment.commentId.slice(0, 16)}`);
+            continue;
+          }
+          const event = buildCommentEvent(comment, selfUin, tid, selfUin);
+          this.logEventDebug(`[Poller:DEBUG] publishing comment event`);
+          await this.hub.publish(event);
+        }
+      }
+    } else {
+      await this.pollCountsDelta(selfUin, tid, 'comment');
+    }
+  }
+
+  private async pollLikes(selfUin: string, tid: string): Promise<void> {
+    // 使用 bestEffort 获取点赞列表（带多级降级）
+    const rawLikes = await this.client.getLikeListBestEffort(selfUin, tid);
+    if (rawLikes.length > 0) {
+      for (const raw of rawLikes) {
+        const like = normalizeLike(raw);
+        if (!like.uin) continue;
+        if (!this.seenLikeUins.has(tid)) this.seenLikeUins.set(tid, new Set());
+        if (!this.seenLikeUins.get(tid)!.has(like.uin)) {
+          this.seenLikeUins.get(tid)!.add(like.uin);
+          if (String(like.uin) !== String(selfUin)) {
+            const event = buildLikeEvent(like, selfUin, tid, selfUin);
+            await this.hub.publish(event);
+          }
+        }
+      }
+      // 缓存点赞用户，用于计数兜底时匹配
+      this.pendingLikeUsers.set(tid, rawLikes.map(r => ({
+        uin: String(r['uin'] ?? r['fuin'] ?? ''),
+        nickname: String(r['name'] ?? r['nick'] ?? r['nickname'] ?? ''),
+      })).filter(u => u.uin));
+    } else {
+      await this.pollCountsDelta(selfUin, tid, 'like');
+    }
+  }
+
+  private async pollCountsDelta(selfUin: string, tid: string, type: 'comment' | 'like'): Promise<void> {
+    try {
+      const traffic = await this.client.getTrafficData(selfUin, tid);
+      const count = type === 'comment' ? traffic.comment : traffic.like;
+      if (count < 0) return;
+
+      const prev = this.knownCounts.get(tid);
+      if (!prev) {
+        this.knownCounts.set(tid, { comment: traffic.comment, like: traffic.like });
+        return;
+      }
+
+      const prevCount = type === 'comment' ? prev.comment : prev.like;
+      const delta = count - prevCount;
+
+      if (delta > 0) {
+        if (type === 'comment') {
+          prev.comment = count;
+          this.logEventDebug(`[Poller:DEBUG] comment count increased tid=${tid.slice(0,8)} delta=${delta}, skip synthetic comment event`);
+        } else {
+          prev.like = count;
+          // 尝试从 pendingLikeUsers 获取用户信息
+          const pendingUsers = this.pendingLikeUsers.get(tid) ?? [];
+          const seenUins = this.seenLikeUins.get(tid) ?? new Set();
+
+          for (let i = 0; i < delta; i++) {
+            // 找一个未推送过的用户
+            const user = pendingUsers.find(u => u.uin && !seenUins.has(u.uin));
+            if (user) {
+              seenUins.add(user.uin);
+              if (String(user.uin) !== String(selfUin)) {
+                const event = buildLikeEvent(
+                  { uin: user.uin, nickname: user.nickname, createdTime: now() },
+                  selfUin, tid, selfUin,
+                );
+                await this.hub.publish(event);
+              }
+            } else {
+              // 没有匹配的用户，发送空事件
+              const event = buildLikeEvent(
+                { uin: '', nickname: '', createdTime: now() },
+                selfUin, tid, selfUin,
+              );
+              await this.hub.publish(event);
+            }
+          }
+
+          // 清理已使用的用户
+          this.pendingLikeUsers.set(tid, pendingUsers.filter(u => u.uin && !seenUins.has(u.uin)));
+        }
+      } else {
+        if (type === 'comment') prev.comment = count;
+        else prev.like = count;
+      }
+    } catch { /* qz_opcnt2 also failed, skip */ }
+  }
+
+  /**
+   * 仅收缩「仍在轮询评论/点赞」的 tid 集合；**不得**删除 seenCommentIds / seenLikeUins。
+   * 否则旧帖暂时掉出最近 N 条后再进入列表时，会丢失已见评论/点赞，他人评论也会被当成全新 → 重复推送。
+   */
+  private _pruneTrackingDicts(recentTids: string[], max = 100): void {
+    if (this.trackTids.size <= max) return;
+    const toKeep = new Set<string>([...recentTids]);
+    for (const tid of [...this.trackTids].reverse()) {
+      if (toKeep.size >= max) break;
+      toKeep.add(tid);
+    }
+    for (const tid of [...this.trackTids]) {
+      if (!toKeep.has(tid)) {
+        this.trackTids.delete(tid);
+        this.commentWarmTids.delete(tid);
+        this.pendingLikeUsers.delete(tid);
+        this.knownCounts.delete(tid);
+      }
+    }
+  }
+
+  private emitHeartbeat(): void {
+    if (!this.running || !this.config.emitHeartbeatEvents) return;
+    this.lastHeartbeatAt = Date.now();
+    const selfId = this.client.loggedIn ? safeInt(this.client.qqNumber!) : 0;
+    const event = buildHeartbeatEvent(String(selfId), { online: this.statusOk, good: this.statusOk });
+    this.hub.publish(event).catch(() => { /* ignore */ });
+  }
+
+  getStatus(): Record<string, unknown> {
+    return { online: this.statusOk, good: this.statusOk, last_error: this.lastError };
+  }
+
+  /** 控制台用：轮询器运行统计（与 getStatus 的 OneBot 在线语义分开，勿混用） */
+  getStats(): Record<string, unknown> {
+    return {
+      startedAt: this.startedAt,
+      uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0,
+      running: this.running,
+      trackTids: this.trackTids.size,
+      seenPosts: this.seenPostTids.size,
+      seenCommentTids: this.seenCommentIds.size,
+      seenLikeTids: this.seenLikeUins.size,
+      pendingLikeTids: this.pendingLikeUsers.size,
+      knownCounts: this.knownCounts.size,
+      backoff: this.backoff,
+      lastError: this.lastError,
+      lastHeartbeatAt: this.lastHeartbeatAt,
+      pollers: this.stats,
+    };
+  }
+
+  /** 控制台用：最近见到的说说（浅拷贝） */
+  getRecentPosts(limit = 20): Array<Record<string, unknown>> {
+    const n = Math.max(0, Math.min(Math.trunc(limit) || 0, EventPoller.RECENT_POSTS_MAX));
+    if (n === 0) return [];
+    return this.recentPosts.slice(-n);
+  }
+}
