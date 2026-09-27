@@ -133,6 +133,10 @@ jobs:
 
       - name: doctor 能在"还没配置"的状态下给出结论
         shell: bash
+        env:
+          # 下面那段内联 python 要 print 中文，而 Windows runner 的 stdout 是 cp1252。
+          # doctor.py 自己已经重设过 stdout 了，这里重设的是"读它输出的那个进程"。
+          PYTHONIOENCODING: "utf-8"
         run: |
           # 这一步故意不建 venv —— 就是要验证 doctor 在坏环境下也能跑完并报出问题，
           # 而不是自己崩掉（"体检工具自己挂"是最没用的体检工具）。
