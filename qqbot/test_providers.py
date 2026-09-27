@@ -15,6 +15,15 @@ import pathlib
 import sys
 import tempfile
 
+# 输出统一成 UTF-8。中文 Windows 上 stdout 是 GBK，下面满屏的 "✅" 直接 print 会抛
+# UnicodeEncodeError，跑到第一个断言就崩（而且看着像测试失败）。这个三段式和
+# qqbot/bot.py 里那份一致 —— 本文件不 import bot，所以要自己加一遍。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
