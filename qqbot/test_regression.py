@@ -3691,6 +3691,67 @@ async def main():
     check("流水**不会**自动进提示词（防止跨群泄漏）",
           "今天下午去书店吗" not in bot.build_system(False, bot.LIFE.current(), None, ADMIN))
 
+    # 【43】控制台的角色卡 op（面板后端）。全程用临时目录，绝不动仓库里的卡与 config。
+    print("\n【43】控制台：角色卡 op")
+    _sh43 = __import__("shutil")
+    _tmp43 = BASE_DIR / "_tmp_persona43"
+    _sh43.rmtree(_tmp43, ignore_errors=True)
+    (_tmp43 / "personas").mkdir(parents=True)
+    _sh43.copy(BASE_DIR / "personas" / "xuxingjiu.json", _tmp43 / "personas")
+    _real_p43, _real_drop43 = bot.PERSONA, bot.drop_config
+    _real_upd43 = bot.update_config
+    bot.PERSONA = bot.PersonaLibrary(_tmp43, {"persona_lock": True})
+    # update_config 会写仓库里那份 config.json —— 测试里换掉它（不然尾部污染自检会红）
+    bot.update_config = lambda patch: patch
+    try:
+        _snap43 = bot.console_snapshot("persona")
+        check("人设快照带上了卡库、默认卡、锁定字段",
+              _snap43["default_card"] == "xuxingjiu" and len(_snap43["cards"]) == 1
+              and _snap43["locked_fields"],
+              f"default={_snap43['default_card']} cards={[c['id'] for c in _snap43['cards']]}")
+        check("快照里的字段值是「当前生效的」而不是 config 原始值",
+              _snap43["persona"] == bot.PERSONA.prompt_fields("")["persona"])
+        _r43 = bot.console_apply("persona_card_new", {"card": "t43", "name": "测试卡"})
+        check("新建卡", bool(_r43.get("ok")) and "t43" in bot.PERSONA.cards, str(_r43)[:80])
+        _r43 = bot.console_apply("persona_card_field",
+                                 {"card": "t43", "field": "persona", "value": "话很少。"})
+        check("改卡字段",
+              bool(_r43.get("ok")) and bot.PERSONA.cards["t43"]["prompt"]["persona"] == "话很少。")
+        try:
+            bot.console_apply("persona_card_field",
+                              {"card": "xuxingjiu", "field": "name", "value": "别人"})
+            check("锁着时改名字会被拒", False, "居然改成了")
+        except ValueError as exc:
+            check("锁着时改名字会被拒（带理由）", "硬约束" in str(exc), str(exc)[:60])
+        bot.console_apply("persona_card_default", {"card": "t43"})
+        check("改默认卡", bot.PERSONA.default_id() == "t43", bot.PERSONA.default_id())
+        bot.console_apply("persona_bind", {"session": "g999", "card": "t43"})
+        check("按会话绑定", bot.PERSONA.resolve("g999") == "t43")
+        bot.console_apply("persona_bind", {"session": "g999", "card": ""})
+        check("card 留空 = 解绑回默认卡", bot.PERSONA.binding_of("g999") == "")
+        _dropped43: list = []
+        bot.drop_config = lambda paths: (_dropped43.append(list(paths)), list(paths))[1]
+        _r43 = bot.console_apply("persona_release", {})
+        check("退位把老键清单交出去（真删由 drop_config 干）",
+              bool(_r43.get("ok")) and _dropped43 and
+              _dropped43[0] == bot.PERSONA_LEGACY_PATHS, str(_r43)[:80])
+        _r43 = bot.console_apply("persona_card_delete", {"card": "t43"})
+        check("删卡", bool(_r43.get("ok")) and "t43" not in bot.PERSONA.cards)
+        try:
+            bot.console_apply("persona_card_delete", {"card": "xuxingjiu"})
+            check("最后一张卡删不掉", False, "居然删掉了")
+        except ValueError as exc:
+            check("最后一张卡删不掉", "最后一张" in str(exc), str(exc)[:40])
+        try:
+            bot.console_apply("persona_bind", {"session": "", "card": "xuxingjiu"})
+            check("绑定必须给会话键", False, "居然过了")
+        except ValueError as exc:
+            check("绑定必须给会话键", "会话" in str(exc), str(exc)[:40])
+    finally:
+        bot.PERSONA, bot.drop_config = _real_p43, _real_drop43
+        bot.update_config = _real_upd43
+        _sh43.rmtree(_tmp43, ignore_errors=True)
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]

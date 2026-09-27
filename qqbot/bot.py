@@ -101,6 +101,7 @@ if sys.stdout is not None:
 # 必须放在 CFG 之后：卡库要读 CFG 判 lock、做老键覆盖。
 from persona import (  # noqa: E402
     ART_FIELDS,
+    LOCKED_FIELDS,
     PROMPT_FIELDS,
     PROMPT_LIST_FIELDS,
     PersonaLibrary,
@@ -9160,10 +9161,81 @@ def console_apply(op: str, payload: dict | None = None) -> dict:
         value = str(p.get("value") or "")
         if len(value) > 20000:
             raise ValueError("内容过长（上限 20000 字）")
-        update_config({field: value})    # 合并写，别整体覆盖
-        logger.info("控制台：%s 已更新（%d 字）", field, len(value))
-        return {"ok": True, "field": field, "length": len(value),
-                "note": "下一条回复即生效（build_system 每次 live 读 CFG）"}
+        # ★ 改的是**角色卡**，不是 config 顶层那几个老键 —— 人设层接管之后，
+        #   老键只是迁移期的兜底。老键还在的话必须一起更新：它会盖住卡，
+        #   只写卡的话用户看到的就是"改了没生效"（这条踩过）。
+        cid = PERSONA.resolve(str(p.get("session") or ""))
+        if not cid:
+            raise ValueError("一张角色卡都没有（personas/ 目录是空的）")
+        ok, msg = PERSONA.set_field(cid, field, value)
+        if not ok:
+            raise ValueError(msg)
+        if field in CFG:
+            update_config({field: value})
+        logger.info("控制台：卡 %s 的 %s 已更新（%d 字）", cid, field, len(value))
+        return {"ok": True, "field": field, "card": cid, "length": len(value),
+                "note": "下一条回复即生效（build_system 每次 live 读卡）"}
+
+    # ── 角色卡：新建 / 删除 / 改默认 / 改任意字段 / 按会话绑定 / 老键退位 ──
+    if op == "persona_card_new":
+        cid = str(p.get("card") or "").strip()
+        ok, msg = PERSONA.new_card(cid, str(p.get("name") or "").strip())
+        if not ok:
+            raise ValueError(msg)
+        logger.info("控制台：新建角色卡 %s", cid)
+        return {"ok": True, "card": cid, "note": msg}
+
+    if op == "persona_card_delete":
+        cid = str(p.get("card") or "").strip()
+        ok, msg = PERSONA.delete_card(cid)
+        if not ok:
+            raise ValueError(msg)
+        logger.info("控制台：删除角色卡 %s", cid)
+        return {"ok": True, "note": msg}
+
+    if op == "persona_card_default":
+        cid = str(p.get("card") or "").strip()
+        ok, msg = PERSONA.set_default(cid)
+        if not ok:
+            raise ValueError(msg)
+        logger.info("控制台：默认角色卡改成 %s", cid)
+        return {"ok": True, "default": cid, "note": msg}
+
+    if op == "persona_card_field":
+        # 比 persona_set 宽：能改任意字段（含话术池和生图字段）。锁由人设层把关 ——
+        # 名字和形象在锁定模式下改不动，会带着理由抛回来。
+        cid = str(p.get("card") or "").strip() or PERSONA.default_id()
+        field = str(p.get("field") or "").strip()
+        value = p.get("value")
+        if isinstance(value, str) and len(value) > 20000:
+            raise ValueError("内容过长（上限 20000 字）")
+        ok, msg = PERSONA.set_field(cid, field, value)
+        if not ok:
+            raise ValueError(msg)
+        if field in CFG:                      # 提示词/话术池的老键在顶层
+            update_config({field: value})
+        elif f"sd.{field}" in (CFG.get("sd") or {}):   # 生图字段的老键在 sd 段
+            update_config({f"sd.{field}": value})
+        logger.info("控制台：卡 %s 的 %s 已更新", cid, field)
+        return {"ok": True, "card": cid, "field": field, "note": msg}
+
+    if op == "persona_bind":
+        session = str(p.get("session") or "").strip()
+        card_id = str(p.get("card") or "").strip()
+        if not session:
+            raise ValueError("要指定会话（群 g<群号> / 私聊 p<QQ号>）")
+        ok, msg = PERSONA.unbind(session) if not card_id else PERSONA.bind(session, card_id)
+        if not ok:
+            raise ValueError(msg)
+        logger.info("控制台：人设绑定 —— %s", msg)
+        return {"ok": True, "session": session, "card": card_id, "note": msg}
+
+    if op == "persona_release":
+        gone = drop_config(PERSONA_LEGACY_PATHS)
+        logger.info("控制台：老键退位，删掉 %s", gone)
+        return {"ok": True, "removed": gone,
+                "note": ("已删掉这些老键，从现在起以角色卡为准" if gone
+                         else "config.json 里没有跟角色卡重叠的老键，本来就是以卡为准")}
 
     if op == "group_note_delete":
         gid = str(p.get("group") or "").strip()
@@ -9352,6 +9424,8 @@ RESTRICT_LABELS: dict[str, tuple[str, str]] = {
     "search":        ("联网搜索",     "上网查资料后再回答"),
     "ban":           ("禁言群成员",   "在群里禁言别人（由她自己判断该不该）"),
     "clear":         ("清空对话记忆", "用 /clear 清掉当前会话的上下文"),
+    "persona":       ("调整角色人设", "用 /人设 换人设、按群绑卡（控制台面板上也能改）"),
+    "chatlog":       ("翻跨会话记录", "翻她自己在别的地方聊过的内容（[记录:…] / /记录）"),
     "bili_login":    ("B站扫码登录",  "用 /bili 登录 B 站账号"),
 }
 
@@ -9496,18 +9570,45 @@ def console_snapshot(kind: str, arg=None) -> dict:
     if kind == "stickers":
         return {"ok": True, **STICKERS.snapshot()}
     if kind == "persona":
+        # 老字段照旧给（面板那六个文本框还在用），但值已经是**当前那张卡生效后的**
+        # —— 也就是"她实际会拿到的"，不再是 config 顶层那几个原始值。
+        _eff = PERSONA.prompt_fields("")
+        _cards = []
+        for _cid in sorted(PERSONA.cards):
+            _c = PERSONA.cards[_cid]
+            _cards.append({
+                "id": _cid,
+                "name": _c.get("name", ""),
+                "default": bool(_c.get("default")),
+                # 每个可编辑字段标出它有没有被锁（名字和形象锁着时面板要置灰）
+                "locked": {_f: PERSONA.locked(_cid, _f) for _f in LOCKED_FIELDS},
+                "locked_any": any(PERSONA.locked(_cid, _f) for _f in LOCKED_FIELDS),
+                "prompt": dict(_c.get("prompt") or {}),
+                "lists": {k: list(v or []) for k, v in (_c.get("lists") or {}).items()},
+                "art": {k: (dict(v) if isinstance(v, dict) else v)
+                        for k, v in (_c.get("art") or {}).items()},
+            })
         return {
             "ok": True,
-            "persona": CFG.get("persona", ""),
-            "world": CFG.get("world", ""),
-            "style_boost": CFG.get("style_boost", ""),
-            "style_format": CFG.get("style_format", ""),
-            "self_image": CFG.get("self_image", ""),
-            "identity_guard": CFG.get("identity_guard", ""),
-            "wake_prefix": CFG.get("wake_prefix", []),
+            "persona": _eff.get("persona", ""),
+            "world": _eff.get("world", ""),
+            "style_boost": _eff.get("style_boost", ""),
+            "style_format": _eff.get("style_format", ""),
+            "self_image": _eff.get("self_image", ""),
+            "identity_guard": _eff.get("identity_guard", ""),
+            "wake_prefix": _eff.get("wake_prefix", []),
             # 参照池不进提示词，只在这块面板上给人看/改
-            "identity_lines": CFG.get("identity_lines", []),
-            "reply_fallback_lines": CFG.get("reply_fallback_lines", []),
+            "identity_lines": _eff.get("identity_lines", []),
+            "reply_fallback_lines": _eff.get("reply_fallback_lines", []),
+            # ── 角色卡这一层 ──
+            "cards": _cards,
+            "default_card": PERSONA.default_id(),
+            "bindings": dict(PERSONA.bindings),
+            # 还在盖住卡的老键（面板上那个「以卡为准」按钮就是清它们）
+            "conflicts": [k for k, _, _ in PERSONA.conflicts()],
+            "lock_enabled": bool(CFG.get("persona_lock", False)),
+            "locked_fields": list(LOCKED_FIELDS),
+            "art": PERSONA.art_fields(""),
         }
     if kind == "vision":
         # 快照必须同步短耗时：本地探测是联网活儿，只能丢后台，读的是缓存结果

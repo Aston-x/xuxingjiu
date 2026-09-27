@@ -466,7 +466,13 @@ _SECURITY_HEADERS = {
 WRITE_OPS = frozenset({
     "restrict_set",        # 受限功能开关（admin.restrict.*）
     "access_set",          # 管理员名单 / 禁言豁免名单
-    "persona_set",         # 人设五个字段之一
+    "persona_set",         # 角色卡：改一个提示词字段（写的是卡，config 老键一起更新）
+    "persona_card_new",    # 角色卡：新建一张
+    "persona_card_delete", # 角色卡：删掉一张
+    "persona_card_default",# 角色卡：改成默认卡
+    "persona_card_field",  # 角色卡：改任意字段（含话术池与生图字段，锁由人设层把关）
+    "persona_bind",        # 角色卡：按会话绑定（card 留空 = 解绑回默认卡）
+    "persona_release",     # 角色卡：让 config 里的老键退位（改成以卡为准）
     "session_clear",       # 清掉某个会话的上下文
     "memory_approve",      # 批准记住某人
     "memory_decline",      # 拒绝记住某人
