@@ -3557,6 +3557,32 @@ async def main():
         bot.drop_config = _real_drop39
         _sh39.rmtree(_tmp39, ignore_errors=True)
 
+    # 【40】发图时的人设：自拍要当照片说，不能说自己画的
+    print("\n【40】发图：照片还是画")
+    check("「自拍」判定为照片", bot.photo_frame("在窗台托腮自拍") is True)
+    check("「拍照/照片」判定为照片", bot.photo_frame("拍张照片给你") is True)
+    check("「画一张…」判定为画", bot.photo_frame("画一张窗台上的风景") is False)
+    check("画面描述里没提照片也没提画时，按画处理", bot.photo_frame("在窗台看书") is False)
+    check("两边都提时按画处理（明说画了就是画）",
+          bot.photo_frame("画一张自拍风格的手绘") is False)
+    check("空字符串不误判", bot.photo_frame("") is False and bot.photo_frame(None) is False)
+    _sys40 = bot.build_system(False, bot.LIFE.current(), None, ADMIN)
+    if "你能画图" in _sys40:
+        check("画图说明里写明了「自拍是照片、不许说成我画的」",
+              "绝不可以说成是你画的" in _sys40)
+    else:
+        check("（测试环境没开生图，画图说明不出现 —— 跳过这条）", True)
+    # 这几条断言的是**我们发布的那份** config.example.json：本地 config.json 是早先
+    # 从旧示例生成的（gitignored），拿它做断言会一直红，而且测的也不是"发出去的是什么"。
+    _ex40 = json.loads((BASE_DIR / "config.example.json").read_text(encoding="utf-8"))
+    _sd40 = _ex40.get("sd") or {}
+    _neg40 = str(_sd40.get("negative") or "")
+    check("负提示词里补了尾巴相关的禁词（多条 / 脱离）",
+          "multiple tails" in _neg40 and "detached tail" in _neg40, _neg40[-80:])
+    check("负提示词里补了脚趾相关的禁词", "extra toes" in _neg40 and "bad toes" in _neg40)
+    check("固定形象里写了 single tail（只有一条尾巴）",
+          "single tail" in str(_sd40.get("character_tags") or ""))
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]

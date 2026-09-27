@@ -3100,6 +3100,20 @@ PICTURE_ASK = re.compile(
     r"(自拍|拍照|拍张|拍个|发张图|发张自拍|发个图|看看你|瞧瞧你|长什么样|什么样了|"
     r"画一张|画个图|给我看看|给我瞧瞧|拍给我|发给我看看)")
 
+# 「刚发出去这张图，该当照片还是当画」—— 它决定她怎么描述这张图，不是小事：
+# 用户说"自拍"却听她说"我刚画的"，人设当场就崩了（画是她的技能，照片是她本人）。
+# 判断只看**画面描述里有没有照片/画画的字眼**，两边都有就当画（说了"画"就按画走）。
+PHOTO_ASK = re.compile(
+    r"(自拍|拍照|拍张|拍个|拍给|照片|相片|看看你|瞧瞧你|长什么样|什么样了|"
+    r"给我看看|给我瞧瞧)")
+DRAW_ASK = re.compile(r"(画|绘|素描|涂鸦)")
+
+
+def photo_frame(text: str) -> bool:
+    """这张图对外该说成"你拍的"还是"你画的"。True = 照片。"""
+    s = text or ""
+    return bool(PHOTO_ASK.search(s)) and not bool(DRAW_ASK.search(s))
+
 
 class QzoneAPI:
     """通过本地 qzone-bridge（OneBot 兼容 HTTP）读 QQ 空间动态。写发仍走 NapCat 原生接口。"""
@@ -5923,6 +5937,8 @@ def build_system(is_group: bool, life: dict | None = None, group_id=None,
         parts.append("（你能画图：写 [画图:画面描述]，图直接发到这里。\n"
                      "要自拍、要照片、问长相、让你画一张，这些就是要图；"
                      "嘴上可以嫌，图得给。\n"
+                     "要自拍或照片时，那就是你本人拍的，**绝不可以说成是你画的**、"
+                     "也不许提画布画笔之类；只有对方明说「画一张」才是画。\n"
                      "问你在干嘛的时候，想画就画，不用每回都掏图。\n"
                      "画面贴此刻心情；图里出现人的话，只能是你。）")
     if is_group:
@@ -6363,8 +6379,17 @@ async def apply_reply_tags(key: str, ask: list, reply: str,
     # 会把 [空间] **顺手丢掉但不执行** —— 所以先把它摘出来、之后放回去。
     read_tags = " ".join(m.group(0) for m in QZONE_READ_TAG.finditer(text))
     if QZONE_TAG.search(text) or DRAW_TAG.search(text):
+        # 「这次该当照片还是当画」以**用户那句话**为准：用户说"自拍"就必须当照片，
+        # 不然她下一句会说成"我刚画的"，人设当场崩（用户报的就是这个）。
+        _last_user = ""
+        for _m in reversed(ask or []):
+            if isinstance(_m, dict) and _m.get("role") == "user":
+                _last_user = str(_m.get("content") or "")
+                break
+        _photo = photo_frame(_last_user) if _last_user.strip() else None
         text, image = await handle_qzone_reply(
-            QZONE_READ_TAG.sub("", text), life, say=say, purpose=purpose, skey=key)
+            QZONE_READ_TAG.sub("", text), life, say=say, purpose=purpose,
+            skey=key, photo=_photo)
     if read_tags:
         text = (text + "\n" + read_tags).strip()
 
@@ -6870,8 +6895,10 @@ async def handle_message(ev: dict) -> None:
 
     if not is_group:
         history.append({"role": "user", "content": shown or "(图片)"})
-    # 回复为空但有图/表情包时，历史记一笔占位，保证上下文连贯
-    fallback = "(画了张图)" if chat_image else "(发了一张表情包)"
+    # 回复为空但有图/表情包时，历史记一笔占位，保证上下文连贯。
+    # 占位符**故意不写"画的"**：它是后续轮次里她唯一能看到的线索，
+    # 写"画了张图"会让她下一轮接着说自己画了（自拍场景下就是人设崩）。
+    fallback = "(刚发了张图)" if chat_image else "(发了一张表情包)"
     history.append({"role": "assistant", "content": reply or fallback})
 
     # 引用：只有群里同时在聊的人不止一个时才引用，免得分不清她在回谁；
@@ -7116,7 +7143,7 @@ def split_comment(raw: str) -> tuple[str, str]:
 
 async def handle_qzone_reply(reply: str, life: dict | None = None,
                              say=None, purpose: str = "group",
-                             skey: str = "") -> tuple[str, str | None]:
+                             skey: str = "", photo: bool | None = None) -> tuple[str, str | None]:
     """处理 [画图:描述] 与 [说说:文字]。
 
     画图 + 说说 -> 配图发到 QQ 空间
@@ -7125,6 +7152,10 @@ async def handle_qzone_reply(reply: str, life: dict | None = None,
 
     `skey`：当前会话键。画出来的长相按它选角色卡 —— 群里绑了别的卡，
     这个群里画的就是那张卡的人（所以"按群设人设"连形象一起换）。
+
+    `photo`：这次该当**照片**还是当画（True/False；None = 按画面描述自己判断）。
+    以用户那句话为准，比模型自己写的画面描述可靠 —— 用户说"自拍"就必须当照片，
+    不能让她说成"我刚画的"。
     """
     draw = DRAW_TAG.search(reply)
     caption = QZONE_TAG.search(reply)
@@ -7181,9 +7212,17 @@ async def handle_qzone_reply(reply: str, life: dict | None = None,
 
     # 没配文：图发到当前聊天，缺话就让她自己补一句
     if not text:
+        # 照片和画要用两套说法。早先一律说"你刚画好一张图"，用户让自拍时她就答
+        # "我刚画的" —— 人设当场崩。判据优先用**用户那句话**（photo 参数），
+        # 拿不到才退回看画面描述。
+        is_photo = photo_frame(intent) if photo is None else bool(photo)
+        if is_photo:
+            _cap_ask = (f"（你刚把这张自拍发出去，画面是：{intent}。说一句话，就一句 —— "
+                        "别提是谁拍的，也别提画。）")
+        else:
+            _cap_ask = f"（你刚画好一张图，画面是：{intent}。说一句话发过去，就一句，别解释。）"
         try:
-            got, _ = await CHAT.answer("#cap", [{"role": "user", "content":
-                f"（你刚画好一张图，画面是：{intent}。说一句话发过去，就一句，别解释。）"}])
+            got, _ = await CHAT.answer("#cap", [{"role": "user", "content": _cap_ask}])
             text = clean_reply(got or "")
         except Exception as exc:
             logger.debug("配文生成失败：%s", exc)
