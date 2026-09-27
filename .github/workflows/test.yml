@@ -61,6 +61,14 @@ jobs:
           [ -x "$PY" ] || PY=.venv/Scripts/python.exe
           "$PY" test_providers.py
 
+      - name: 人设层单测（离线）
+        working-directory: qqbot
+        shell: bash
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" test_persona.py
+
       - name: 生图层单测（离线）
         working-directory: qqbot
         shell: bash

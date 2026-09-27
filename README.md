@@ -170,6 +170,7 @@ cd qqbot
 .venv\Scripts\python.exe test_regression.py    # full regression, 818 checks
 .venv\Scripts\python.exe test_providers.py     # model layer only, offline
 .venv\Scripts\python.exe test_imagegen.py      # image generation paths
+.venv\Scripts\python.exe test_persona.py       # persona layer: character cards, offline
 ```
 
 ```bash

@@ -156,6 +156,7 @@ cd qqbot
 .venv\Scripts\python.exe test_regression.py    # 全量回归，818 项
 .venv\Scripts\python.exe test_providers.py     # 只管模型层，纯离线
 .venv\Scripts\python.exe test_imagegen.py      # 生图各条路径
+.venv\Scripts\python.exe test_persona.py       # 人设层：角色卡、多套人设，纯离线
 ```
 
 ```bash
