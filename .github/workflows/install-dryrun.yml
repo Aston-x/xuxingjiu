@@ -53,6 +53,9 @@ jobs:
           $rc = $LASTEXITCODE
           Write-Host "退出码 = $rc（只读干跑返回 0 或 1 都算正常）"
           if ($rc -ne 0 -and $rc -ne 1) { throw "install.ps1 意外退出码：$rc" }
+          # 必须显式 exit 0：pwsh 会把 $LASTEXITCODE 带出进程，上面那个 if 判断通过
+          # 归通过，步骤照样会被判成失败（这行不加，这一整步永远红）。
+          exit 0
 
       # 上面那步走的是 .ps1。但用户双击的是 install.bat —— 而这一轮翻的车
       # 恰恰就在 .bat 上，所以必须把"真正被双击的那个文件"也跑一遍。

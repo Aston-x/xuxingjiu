@@ -7,6 +7,15 @@ import sys
 import time
 from datetime import datetime
 
+# 输出统一成 UTF-8，而且必须放在下面那句 print 之前。CI 的 Windows runner 是
+# 英文系统，stdout 走 cp1252；第 25 行的 `import bot` 虽然也会重设一次，但这个
+# 文件在那之前就已经打过中文了 —— 先崩的是它，后面的守卫根本轮不上。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
 # 项目根：由文件自身位置推导，搬盘/改目录名都不用动这里
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
