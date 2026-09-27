@@ -3527,6 +3527,127 @@ WEB = Web()
 WEB_TAG = re.compile(r"\[搜索[:：]?([^\]]*)\]")
 
 
+# ── 链接阅读 ──────────────────────────────────────────────────────────
+# 链接的终止字符：空白、尖引号、括号，以及**中文标点** —— 不排除中文标点的话，
+# "http://b.cn/p，还有别的" 会把" ，还有别的"一起吞进 URL（实测踩过）。
+_URL_STOP = "\"'<>）)】]|，。、；：！？（）【】《》「」“”‘’…·"
+LINK_RE = re.compile(r"https?://[^\s" + re.escape(_URL_STOP) + r"]+", re.I)
+
+
+def _is_private_host(host: str) -> bool:
+    """是不是内网 / 本机地址。群里谁都可能贴一个让机器人去请求 —— SSRF 的经典入口。
+
+    单独写成函数而不是一条正则：172.16~31 那段是区间，正则里写不干净；
+    IPv6 又要先去方括号（`split(":")` 会把 [::1] 切成 "[", "", "1]"）。
+    """
+    h = (host or "").strip("[]").lower()
+    if h in ("localhost", "::1", "0.0.0.0", "127.0.0.1"):
+        return True
+    if h.startswith(("127.", "10.", "192.168.", "169.254.")):
+        return True
+    m = re.match(r"^172\.(\d+)\.", h)
+    return bool(m) and 16 <= int(m.group(1)) <= 31
+
+
+class LinkReader:
+    """把聊天里出现的链接抓回来读一遍。
+
+    为什么要有它：以前代码一个 URL 都不认，用户丢个链接进来，她只能对着那串
+    "https://…" 干瞪眼或者猜。现在把正文抓回来喂给她，她就能接着聊。
+
+    边界（每条都有理由）：
+      · 只认 http/https，一条消息最多抓 links.max_links 条（默认 2）；
+      · 默认不抓内网地址（见 _PRIVATE_HOST_RE）；
+      · 只吃 html/text 响应，超时 10 秒、正文最多 1200 字 —— 她不需要全文；
+      · 抓不到就返回空，她照旧没素材，但这条消息**不会卡住**。
+    """
+
+    def __init__(self) -> None:
+        cfg = CFG.get("links", {})
+        self.enable = bool(cfg.get("enable", True))
+        self.timeout = float(cfg.get("timeout_seconds", 10))
+        self.max_chars = int(cfg.get("max_chars", 1200))
+        self.max_links = int(cfg.get("max_links", 2))
+        self.allow_private = bool(cfg.get("allow_private", False))
+
+    @staticmethod
+    def urls_in(text: str) -> list[str]:
+        """消息里的链接，去重、去掉尾随标点（中文句子里的链接后面常跟标点）。"""
+        out: list[str] = []
+        seen: set[str] = set()
+        for m in LINK_RE.finditer(text or ""):
+            u = m.group(0).rstrip(".,;:!?、。，；：！？")
+            if u and u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def blocked(self, url: str) -> bool:
+        """这个地址该不该跳过（内网 / 本机）。"""
+        if self.allow_private:
+            return False
+        m = re.match(r"^https?://([^/]+)", url or "", re.I)
+        host = (m.group(1) if m else "").split("@")[-1].strip()
+        if host.startswith("["):          # IPv6：[::1]:8080
+            host = host[1:host.find("]")] if "]" in host else host[1:]
+        else:
+            host = host.split(":")[0]     # IPv4 / 域名带端口
+        return _is_private_host(host)
+
+    def extract(self, html: str) -> str:
+        """HTML → 「标题 + 正文片段」。纯函数，离线可测。"""
+        html = html or ""
+        title = ""
+        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+        if m:
+            title = WEB._strip(m.group(1))[:80]
+        body = re.sub(r"(?is)<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", html)
+        body = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>", "\n", body)
+        body = re.sub(r"\s{2,}", " ", WEB._strip(body)).strip()
+        if not body:
+            return ""
+        if len(body) > self.max_chars:
+            body = body[:self.max_chars] + "…"
+        return f"《{title}》\n{body}" if title else body
+
+    async def read(self, url: str) -> str:
+        """抓一个链接并转成文字；抓不到返回空串。"""
+        try:
+            client = CHAT.client_for(url)
+            r = await client.get(url, timeout=self.timeout, follow_redirects=True)
+        except Exception as exc:
+            logger.info("读链接失败：%s（%s）", url[:80], exc)
+            return ""
+        ctype = str(r.headers.get("content-type") or "").lower()
+        if r.status_code >= 400 or not ("html" in ctype or "text" in ctype):
+            logger.info("读链接跳过：HTTP %s / %s", r.status_code, ctype[:40])
+            return ""
+        return self.extract(r.text or "")
+
+    async def note(self, text: str) -> str:
+        """把消息里的链接读成一段可塞进上下文的话；没有链接或全读不到就返回空串。"""
+        if not self.enable:
+            return ""
+        urls = self.urls_in(text)[:self.max_links]
+        if not urls:
+            return ""
+        chunks: list[str] = []
+        for u in urls:
+            if self.blocked(u):
+                chunks.append(f"{u}\n（这是内网地址，没去读）")
+                continue
+            got = await self.read(u)
+            if got:
+                chunks.append(f"{u}\n{got}")
+        if not chunks:
+            return ""
+        return ("对方发的链接，内容是这样的（直接用就行，别提「我去读了网页」这种话）：\n"
+                + "\n\n".join(chunks))
+
+
+LINKS = LinkReader()
+
+
 # ══════════════════════ 识图：引擎选择 ══════════════════════
 #
 # 以前"能不能看图"只有一个 vision_relay 开关，云端永远只吃本地 7B 的转述 ——
@@ -6781,6 +6902,14 @@ async def handle_message(ev: dict) -> None:
     # 图片段只服务这一轮：QQ 图床的 URL 会失效，留在上下文里会让之后每轮都被服务端拒绝
     if image_block and is_group and history:
         _replace_pending(history, ph, {"role": "user", "content": shown or "(图片)"})
+
+    # 他发了链接：先把网页正文抓回来喂给她。抓不到就算了（她照旧没素材），
+    # 绝不能因为某个网站连不上就把这一轮卡死。放在 trim_context 之后，
+    # 免得这段几百字的正文把真正该留的上下文挤掉。
+    _link_note = await LINKS.note(text)
+    if _link_note:
+        messages = messages + [{"role": "user", "content": _link_note}]
+        logger.info("链接已读进来：%s", ", ".join(LINKS.urls_in(text))[:120])
 
     logger.info("提问[%s] %s: %s", key, nickname, text[:80] or "(图片)")
     t0 = time.time()

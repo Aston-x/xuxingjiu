@@ -401,6 +401,14 @@
     "sites_per_search": 2,
     "_说明": "sites 是**实测能搜到东西**的站点池（Bing 域名过滤很挑食，豆瓣/优酷/掘金/少数派/GitHub 等实测一律 0 条，已全部删除）。每次随机挑 sites_per_search 个；都没货时自动退回全网搜。"
   },
+  "links": {
+    "enable": true,
+    "max_links": 2,
+    "max_chars": 1200,
+    "timeout_seconds": 10,
+    "allow_private": false,
+    "_说明": "聊天里出现链接时，抓回正文喂给她，她就能接着聊这个链接。max_links 是一条消息最多抓几个（多了既慢又失控），max_chars 是正文给多少字。**allow_private 默认关着**：内网/本机地址不去读 —— 群里谁都能贴一个 URL 让机器人去请求，那是 SSRF 的经典入口；要读自己的内网服务再打开它。"
+  },
   "qzone": {
     "enable": true,
     "ugc_right": 1,

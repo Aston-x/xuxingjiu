@@ -3583,6 +3583,66 @@ async def main():
     check("固定形象里写了 single tail（只有一条尾巴）",
           "single tail" in str(_sd40.get("character_tags") or ""))
 
+    # 【41】链接阅读：把正文抓回来喂给她，且不碰内网地址
+    print("\n【41】链接阅读")
+    _LR41 = bot.LINKS
+    _real_read41, _real_blocked41 = _LR41.read, _LR41.blocked
+    _u41 = bot.LinkReader.urls_in(
+        "看看 https://a.example.com/x?y=1 和 http://b.cn/p，还有 https://a.example.com/x?y=1")
+    check("能从消息里抠出链接并去重",
+          _u41 == ["https://a.example.com/x?y=1", "http://b.cn/p"], str(_u41))
+    check("链接后面的中文标点会被去掉",
+          bot.LinkReader.urls_in("https://b.cn/p，谢谢") == ["https://b.cn/p"])
+    check("没有链接就抠不出东西", bot.LinkReader.urls_in("今天天气不错") == [])
+    _blk41 = {u: _LR41.blocked(u) for u in (
+        "http://127.0.0.1:7860/x", "http://192.168.1.10/", "http://localhost:8080/",
+        "http://10.1.2.3/", "http://169.254.1.1/", "http://172.16.5.5/",
+        "http://[::1]:8080/", "https://example.com/a", "https://8.8.8.8/")}
+    check("内网与本机地址被挡住",
+          all(_blk41[u] for u in ("http://127.0.0.1:7860/x", "http://192.168.1.10/",
+                                  "http://localhost:8080/", "http://10.1.2.3/",
+                                  "http://169.254.1.1/", "http://172.16.5.5/",
+                                  "http://[::1]:8080/")), str(_blk41))
+    check("公网地址不挡", not _blk41["https://example.com/a"]
+          and not _blk41["https://8.8.8.8/"])
+    _html41 = ("<html><head><title>一篇测试文章</title><style>x{y:z}</style>"
+               "<script>var secret=1;</script></head>"
+               "<body><h1>正文标题</h1><p>第一段内容。</p><div>第二段内容。</div>"
+               "</body></html>")
+    _text41 = _LR41.extract(_html41)
+    check("抽出标题和正文", "一篇测试文章" in _text41 and "第一段内容" in _text41, _text41[:90])
+    check("script / style 不进正文", "secret" not in _text41 and "y:z" not in _text41)
+    check("空 HTML 返回空串", _LR41.extract("") == "" and _LR41.extract(None) == "")
+
+    async def _fake_read41(u):
+        return "《标题》正文内容"
+
+    async def _empty_read41(u):
+        return ""
+
+    try:
+        _LR41.read = _fake_read41
+        _note41 = await _LR41.note("看这个 https://example.com/a")
+        check("note() 把链接和正文拼成一段给她",
+              "https://example.com/a" in _note41 and "正文内容" in _note41, _note41[:90])
+        check("note() 里没有链接时返回空串（不白白多塞一段）",
+              await _LR41.note("今天天气不错") == "")
+        _LR41.read = _empty_read41
+        check("抓不到内容时不硬塞一段空话",
+              await _LR41.note("https://example.com/x") == "")
+        _LR41.blocked = lambda u: True
+        _note41b = await _LR41.note("http://192.168.1.1/x")
+        check("内网地址会明确写成「没去读」", "没去读" in _note41b, _note41b[:90])
+    finally:
+        _LR41.read, _LR41.blocked = _real_read41, _real_blocked41
+    try:
+        _LR41.read = _fake_read41
+        _note41c = await _LR41.note("https://example.com/a")
+        check("提示语里写了「别提我去读了网页」，免得她出戏",
+              "别提" in _note41c, _note41c[:60])
+    finally:
+        _LR41.read = _real_read41
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]
