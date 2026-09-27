@@ -23,11 +23,16 @@ consistent.
 
 - She stays in character. An identity guard, no meta-narration, and no making things up.
   If she cannot see an image, she says she cannot see it.
+- Who she is lives in a **character card** (`qqbot/personas/<id>.json`). Write several and
+  you have several characters, switchable per chat or per group; lock one and her name and
+  look stop being editable.
 - She has her own life. A schedule, mood tiers, affinity scores, and things she is doing
   (browsing the old books, sitting on the windowsill, watching a bug).
 - Memory has two layers: per person, shared across groups and DMs, and per group. There are
   rules for when the two disagree.
-- She can look at pictures, draw, browse Bilibili, and post to QQ空间.
+- She can look at pictures, draw, browse Bilibili, and post to QQ空间. Drop a link and she
+  reads it before answering; she can also look back at what she has talked about elsewhere
+  (cross-chat log, on demand — never auto-injected across groups).
 - The model layer is pluggable. Switching vendors is usually a config edit. A vendor with
   its own wire format becomes a small plugin.
 
