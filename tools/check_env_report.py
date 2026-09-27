@@ -26,6 +26,15 @@ import pathlib
 import re
 import sys
 
+# 输出统一成 UTF-8。CI 的 Windows runner 是英文系统，stdout 走 cp1252，
+# 这个脚本的输出全是中文，不重设就直接 UnicodeEncodeError —— 校验环境报告的工具
+# 自己先崩，比报告有问题更难查。三段式和 qqbot/bot.py 一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
 SCHEMA = 1
 OS_FAMILIES = {"windows", "linux", "macos", "unix", "unknown"}
 

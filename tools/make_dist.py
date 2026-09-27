@@ -17,7 +17,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import pathlib
+import sys
 import zipfile
+
+# 输出统一成 UTF-8。英文 Windows 上 stdout 是 cp1252，下面的中文会抛
+# UnicodeEncodeError。三段式和 qqbot/bot.py 一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"

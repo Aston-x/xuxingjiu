@@ -36,6 +36,15 @@ import argparse
 import pathlib
 import sys
 
+# 输出统一成 UTF-8。CI 的 Windows runner 是英文系统，stdout 走 cp1252，
+# 下面那些中文（连 --quiet 也要打一行汇总）直接 print 会抛 UnicodeEncodeError ——
+# 这是个守卫脚本，自己先崩掉比没有守卫还糟。三段式和 qqbot/bot.py 一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 SKIP_DIRS = {
