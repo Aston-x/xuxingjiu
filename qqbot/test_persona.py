@@ -222,6 +222,39 @@ def _run(tmp: pathlib.Path) -> None:
     check("LOCKED_FIELDS 就是「名字+形象」这四个", LOCKED_FIELDS ==
           ("name", "aliases", "self_image", "character_tags"), str(LOCKED_FIELDS))
 
+    # ── 10. 老键退位（换卡换长相的前提）──────────────────────────────
+    print("\n【10】老键退位")
+    check("config 与出厂卡逐字一致时，不报冲突",
+          PersonaLibrary(BASE_DIR, _example_cfg()).conflicts() == [],
+          str(PersonaLibrary(BASE_DIR, _example_cfg()).conflicts()))
+    _diff = _example_cfg()
+    _diff["persona"] = "另一套人设"
+    _diff["sd"] = dict(_diff.get("sd") or {}, character_tags="other tags, 1girl")
+    libc = PersonaLibrary(BASE_DIR, _diff)
+    _conf = {k: (c, d) for k, c, d in libc.conflicts()}
+    check("改了 persona 会报冲突", "persona" in _conf, str(list(_conf)))
+    check("冲突里带着两边的值（config 的 vs 卡里的）",
+          _conf["persona"][0] == "另一套人设"
+          and _conf["persona"][1] == card["prompt"]["persona"])
+    check("sd 段的形象串也会报（字段名带 sd. 前缀）", "sd.character_tags" in _conf,
+          str(list(_conf)))
+    check("空字符串也算盖住（不是「没写」）",
+          "world" in [k for k, _, _ in PersonaLibrary(
+              BASE_DIR, dict(_example_cfg(), world="")).conflicts()])
+    _gone = libc.release_legacy()
+    check("退位会删掉老键", "persona" in _gone and "sd.character_tags" in _gone, str(_gone))
+    check("退位后那份 config 里真的没有了",
+          "persona" not in _diff and "character_tags" not in _diff["sd"])
+    check("退位不动别的键（sd.quality_prefix 还在）",
+          "quality_prefix" in _diff["sd"])
+    check("退位之后再查没有冲突了", libc.conflicts() == [], str(libc.conflicts()))
+    check("退位后以卡为准：persona 就是卡里那份",
+          libc.prompt_fields("")["persona"] == card["prompt"]["persona"])
+    check("退位后形象也以卡为准",
+          libc.art_fields("")["character_tags"] == card["art"]["character_tags"])
+    check("再退一次返回空（幂等）",
+          PersonaLibrary(BASE_DIR, _diff).release_legacy() == [])
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

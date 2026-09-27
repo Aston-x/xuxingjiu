@@ -126,6 +126,49 @@ def legacy_overrides(cfg: dict) -> dict:
     return out
 
 
+def legacy_conflicts(cfg: dict, card: dict) -> list[tuple[str, Any, Any]]:
+    """哪些老键正在盖住卡，而且值和卡**不一样**。
+
+    只报"不一样"的：全新安装的 config.json 是从 config.example.json 抄的，和出厂卡
+    逐字相同 —— 那种情况不该天天报警告。返回值 [(字段名, config 里的值, 卡里的值)]。
+    """
+    out: list[tuple[str, Any, Any]] = []
+    p = card.get("prompt") or {}
+    ls = card.get("lists") or {}
+    a = card.get("art") or {}
+    sd = cfg.get("sd") or {}
+    for k in PROMPT_FIELDS:
+        if k in cfg and cfg[k] != p.get(k):
+            out.append((k, cfg[k], p.get(k)))
+    for k in PROMPT_LIST_FIELDS:
+        if k in cfg and cfg[k] != ls.get(k):
+            out.append((k, cfg[k], ls.get(k)))
+    for k in ART_FIELDS:
+        if k in sd and sd[k] != a.get(k):
+            out.append((f"sd.{k}", sd[k], a.get(k)))
+    return out
+
+
+def release_legacy(cfg: dict) -> list[str]:
+    """把所有老键从 config 字典里删掉（**不落盘**，落盘交给调用方）。
+
+    删干净之后，那些字段就完全以角色卡为准 —— 这是"换张卡就是换个人"成立的前提。
+    返回删掉了哪些键，方便日志里说清楚动了什么。
+    """
+    gone: list[str] = []
+    for k in PROMPT_FIELDS + PROMPT_LIST_FIELDS:
+        if k in cfg:
+            cfg.pop(k, None)
+            gone.append(k)
+    sd = cfg.get("sd")
+    if isinstance(sd, dict):
+        for k in ART_FIELDS:
+            if k in sd:
+                sd.pop(k, None)
+                gone.append(f"sd.{k}")
+    return gone
+
+
 class PersonaLibrary:
     """卡库：加载、解析、绑定、编辑。不碰网络也不碰 bot 的状态。
 
@@ -215,6 +258,22 @@ class PersonaLibrary:
             self.cards[cid]["default"] = (cid == card_id)
             self.save_card(cid)
         return True, f"默认人设已切换为：{card_id}"
+
+    def conflicts(self, card_id: str = "") -> list[tuple[str, Any, Any]]:
+        """config.json 里正在盖住这张卡、而且和卡里**不一样**的老键。
+
+        控制台切卡时用它提示"这几项还压着卡"，启动时用它打警告。
+        全新安装（config 从 config.example.json 抄的那份和出厂卡逐字相同）返回空。
+        """
+        cid = card_id or self.default_id()
+        return legacy_conflicts(self.cfg, self.cards.get(cid) or {})
+
+    def release_legacy(self) -> list[str]:
+        """把 config 那份里的老键全删掉（不落盘，调用方负责写回）。
+
+        删完这些字段就以角色卡为准了 —— "换张卡就是换个人"成立的前提。
+        """
+        return release_legacy(self.cfg)
 
     def resolve(self, session_key: str = "") -> str:
         """这个会话用哪张卡：精确绑定的 > 默认卡 > 空。"""

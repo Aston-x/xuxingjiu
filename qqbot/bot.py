@@ -104,6 +104,25 @@ from persona import PersonaLibrary  # noqa: E402
 PERSONA = PersonaLibrary(BASE, CFG)
 
 
+def _warn_persona_legacy() -> None:
+    """config.json 里的老键还在盖角色卡时，启动说一声。
+
+    不说的话，换卡只换提示词、不换长相，看起来像"这功能没生效"。
+    只报和卡**不一样**的键 —— 全新安装两边逐字相同，不该天天响。
+    """
+    conf = PERSONA.conflicts()
+    if not conf:
+        return
+    logger.warning(
+        "config.json 里这些老键正在覆盖角色卡：%s。"
+        "想让角色卡完全说了算，把这几项从 config.json 删掉即可"
+        "（留着也不会出别的问题，只是卡改不动它们）。",
+        "、".join(k for k, _, _ in conf))
+
+
+_warn_persona_legacy()
+
+
 def session_key(is_group: bool, group_id=None, user_id=None) -> str:
     """会话键：群聊 g<群号>，私聊 p<QQ号>。
 
