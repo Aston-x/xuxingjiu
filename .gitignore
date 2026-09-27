@@ -25,6 +25,8 @@ logs/
 # ── 凭据与本地配置（务必不要提交） ──
 .env
 .env.*
+# .env.example 是模板，必须随仓库发布；真实 .env 才不能提交
+!.env.example
 config.json
 config.json.bak
 *.bak

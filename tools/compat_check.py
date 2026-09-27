@@ -13,17 +13,34 @@
      否则 3.14 从来没被真机装过、跑过，等于没支持。
   4. qzone-bridge/package.json 必须声明 engines.node 下限，
      给 Node 版本一个早期警告（而不是装到一半才炸）。
+  5. 安装脚本的「环境探测」入口（install.sh --detect / install.ps1 -DetectOnly）
+     必须两份都在：探测是唯一能在三种系统上真跑的安装环节，而两份实现最容易
+     悄悄长歪 —— 只改了 .sh，Windows 用户拿到的报告就少东西。
+  6. 两个脚本都必须保留「绝不碰系统」的逃生开关（--no-system / -NoSystem）。
+     缺了它，脚本就只剩「要么全自动、要么别跑」，没有管理员权限的机器上直接卡死。
+  7. install.bat 必须把参数原样转给 install.ps1（%*），否则双击场景下所有新开关失效。
 
 退出码非 0 = 有违规；preflight.sh 与 CI 会因此变红。
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import pathlib
 import re
-from pathlib import Path
+import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+# 输出统一成 UTF-8。中文 Windows 上 stdout 是 GBK，下面的 ✔ / ✘ 直接 print 会抛
+# UnicodeEncodeError —— 守卫自己崩掉，比没有守卫还糟（preflight 会把它当成"未通过"）。
+# 这个三段式和 qqbot/bot.py 保持一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 FAILS: list[str] = []
 
 
@@ -87,6 +104,34 @@ def main() -> int:
             pass
     check("qzone-bridge/package.json 声明 engines.node 下限", engines_ok,
           '加 "engines": { "node": ">=18" }')
+
+    # 6) 安装脚本的「环境探测」入口必须两份都在。
+    #    探测是唯一一个能在三种系统上真跑的安装环节（装依赖那半段没法在 CI 里真跑），
+    #    而两份实现最容易悄悄长歪：只改了 .sh，Windows 用户拿到的报告就少东西。
+    #    install-dryrun.yml 会真的跑这两条命令并比对结果，这里只守「有没有」。
+    sh_detect = sh.exists() and "--detect" in sh.read_text(encoding="utf-8")
+    check("install.sh 有环境探测入口（--detect）", sh_detect,
+          "加 --detect / --json，并让它一个文件都不动")
+    ps_detect = ps1.exists() and "-DetectOnly" in ps1.read_text(encoding="utf-8-sig")
+    check("install.ps1 有环境探测入口（-DetectOnly）", ps_detect,
+          "加 -DetectOnly / -Json，并让它一个文件都不动")
+
+    # 7) 「绝不碰系统」的逃生开关。缺了它，脚本就只剩「要么全自动、要么别跑」，
+    #    在没有管理员权限的机器上会直接卡死。
+    sh_nosys = sh.exists() and "--no-system" in sh.read_text(encoding="utf-8")
+    ps_nosys = ps1.exists() and "-NoSystem" in ps1.read_text(encoding="utf-8-sig")
+    check("install.sh 有 --no-system（绝不碰系统包管理器）", sh_nosys, "加 --no-system")
+    check("install.ps1 有 -NoSystem（绝不碰系统包管理器）", ps_nosys, "加 -NoSystem")
+
+    # 8) 两份探测都要能给机器读的报告 —— CI 靠它比对两份实现是否一致。
+    ps_json = ps1.exists() and "-Json" in ps1.read_text(encoding="utf-8-sig")
+    check("install.ps1 能输出 JSON 报告（-Json）", ps_json, "加 -Json")
+
+    # 9) 双击入口必须把参数原样转给 install.ps1，否则新加的开关在双击场景下全失效。
+    bat = ROOT / "install.bat"
+    bat_fwd = bat.exists() and "%*" in bat.read_text(encoding="ascii", errors="replace")
+    check("install.bat 把参数透传给 install.ps1（%*）", bat_fwd,
+          "在调用 install.ps1 的那行末尾加上 %*")
 
     print()
     if FAILS:

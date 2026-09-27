@@ -57,6 +57,63 @@ jobs:
           # 只读干跑时没有 venv、跳过 npm，返回 1 是预期值，不是失败
           if ($rc -ne 0 -and $rc -ne 1) { throw "install.bat 意外退出码：$rc" }
 
+      # 环境探测是安装链路里唯一能在三种系统上都真跑的环节，所以必须每平台真跑一遍。
+      # 报告写到 $RUNNER_TEMP（仓库外），免得污染工作区、影响下面那条"只读"断言。
+      # check_env_report.py 会校验结构，也会校验取值（比如 python.version 必须
+      # 真的是 x.y.z 且 >=3.11）—— 探测悄悄返回垃圾是这类代码最常见的坏法。
+      - name: 环境探测（install.sh --detect --json）
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p "$RUNNER_TEMP/envprobe"
+          bash install.sh --detect --json > "$RUNNER_TEMP/envprobe/env-sh.json"
+          python tools/check_env_report.py "$RUNNER_TEMP/envprobe/env-sh.json"
+
+      - name: 环境探测（install.ps1 -DetectOnly -Json）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "envprobe"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          ./install.ps1 -DetectOnly -Json > (Join-Path $out "env-ps.json")
+          python tools/check_env_report.py (Join-Path $out "env-ps.json")
+
+      # Windows 上两份实现同时在场，正好互相印证：探测出来的**事实**必须一致
+      # （选中的解释器可以不同 —— 两份实现按各自优先级挑 Python，挑到 3.12 还是
+      # 3.11 都对）。这是防止「只改了 .sh，Windows 那份悄悄长歪」的机器闸门。
+      - name: 两份探测实现必须互相认同
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          bash install.sh --detect --json > "$RUNNER_TEMP/envprobe/env-sh.json"
+          python tools/check_env_report.py --compare \
+            "$RUNNER_TEMP/envprobe/env-sh.json" "$RUNNER_TEMP/envprobe/env-ps.json"
+
+      # 「--check 只读」以前只是脚本里的一句注释，现在让机器守：
+      # 跑之前后各打一次 git status，必须一个字都不差。
+      - name: --check / -CheckOnly 真的没动任何文件
+        shell: bash
+        run: |
+          before=$(git status --porcelain)
+          set +e
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            QQBOT_NO_PAUSE=1 cmd.exe //c "install.bat -CheckOnly" >/dev/null 2>&1
+          else
+            bash install.sh --check >/dev/null 2>&1
+          fi
+          rc=$?
+          set -e
+          after=$(git status --porcelain)
+          echo "退出码 = $rc（只读干跑返回 0 或 1 都算正常）"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "::error::只读干跑意外退出码：$rc"; exit 1
+          fi
+          if [ "$before" != "$after" ]; then
+            echo "::error::只读模式动了文件！下面是前后差异："
+            diff <(echo "$before") <(echo "$after") || true
+            exit 1
+          fi
+          echo "没有文件被改动。"
+
       - name: doctor 能在"还没配置"的状态下给出结论
         shell: bash
         run: |
