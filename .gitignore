@@ -32,6 +32,8 @@ config.json.bak
 *.bak
 # 跨会话聊天流水（运行时产物，含群号与聊天内容，绝不进仓库）
 chat_log.json
+# 按会话的人设绑定（同样是群号/QQ号）
+persona_bindings.json
 
 # ── 本地中间件 ──
 _patch/

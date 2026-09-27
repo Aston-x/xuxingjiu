@@ -32,7 +32,10 @@ sys.path.insert(0, str(BASE_DIR))
 import bot  # noqa: E402
 
 BOT = 10001
-ADMIN = 10002
+# 管理员号**从跑测试时那份 config 里取第一个**，别写死：
+# 写死的话，同一个套件在开源仓库（示例配置里是 10002）绿、在别人自己的运行目录
+# （config.json 里是他自己的号）红 —— 看着像"代码把功能弄坏了"，其实只是测试假设错了。
+ADMIN = (bot.CFG.get("admin", {}).get("user_ids") or [10002])[0]
 OTHER = 10003        # 测试用非管理员
 G = 999
 ok = fail = 0
