@@ -21,6 +21,22 @@
   Linux / macOS：
     bash install.sh
 
+  它会先**探测本机环境**（系统 / 发行版 / 包管理器 / Python / Node / git / 网络），
+  然后缺什么补什么：能自己装的自动装，动系统包管理器之前会问一句，
+  装不了的会把可直接粘贴的命令打给你。官方源慢会自动切清华源。
+
+  只想看看本机环境、不装任何东西（出问题先跑这个）：
+    Windows:  powershell -ExecutionPolicy Bypass -File install.ps1 -DetectOnly
+    POSIX:    bash install.sh --detect
+
+  其它常用参数（Windows 上把 --xxx 写成 -Xxx）：
+    --check           只检查、不动任何文件（CI 用）
+    --yes             无人值守：系统级依赖也不再问
+    --no-system       绝不碰系统包管理器，缺什么只打印命令
+    --dry-run         把要做的事全打印出来，什么都不做
+    --mirror auto|off|tuna|aliyun   下载源策略，默认 auto
+    --with-browser    额外装 Playwright chromium（约 150 MB）
+
   想装到别处 / 换仓库地址：
     Windows:  powershell -ExecutionPolicy Bypass -File install.ps1 -TargetDir D:\bot -RepoUrl <你的仓库>
     POSIX:    TARGET_DIR=/opt/bot REPO_URL=<你的仓库> bash install.sh

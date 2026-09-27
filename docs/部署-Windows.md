@@ -26,6 +26,11 @@
 - 一个**专门给机器人用**的 QQ 号（别用日常号 —— 见第 5 节）
 - QQ 客户端（NT 版，即 QQNT）
 
+> 懒得手动装？双击 `install.bat`：它会先探测本机（系统 / winget / Python / Node / git / 网络），
+> 缺 Python 就用 winget 装一份**用户级**的（不动系统 Python），然后自动建 venv、装依赖、跑体检。
+> 只想看看环境、不装任何东西：`powershell -ExecutionPolicy Bypass -File install.ps1 -DetectOnly`。
+> 下面第 2 节写的就是它替你做的事 —— 想手动来、或者想搞清楚每一步在干什么，就照着走。
+
 > 为什么强调"专门给机器人用的号"：NapCat 是注入式框架，会 hook QQ 客户端。
 > 用日常号一旦被风控，影响的是你的主账号。
 

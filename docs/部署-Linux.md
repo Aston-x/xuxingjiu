@@ -69,6 +69,13 @@ sudo apt update && sudo apt install -y python3 python3-venv python3-pip git
 brew install python@3.12 node git
 ```
 
+> 懒得手动装？跑 `bash install.sh`：它先探测发行版与包管理器
+> （apt / dnf / pacman / zypper / apk / brew），缺 Python 就装 —— 包括 Debian/Ubuntu 上
+> 那个**单独的** `python3-venv` 包（`python3 -m venv` 失败的头号原因就是它没装），
+> 装不了的会把可直接粘贴的命令打给你；官方源慢的时候自动切清华源。
+> 只想看环境、一个文件都不动：`bash install.sh --detect`。
+> 下面第 2 节写的就是它替你做的事。
+
 ---
 
 ## 2. 装机器人主体

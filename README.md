@@ -44,7 +44,8 @@ LLM API — it is built around one specific character:
 
 ## Quick start
 
-**One command** (creates the venv, installs deps, generates the config, runs a health check):
+**One command** (probes your machine, installs anything that is missing, creates the venv,
+installs deps, generates the config, runs a health check):
 
 ```bash
 # Windows: double-click install.bat, or
@@ -52,6 +53,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
 # Linux / macOS:
 bash install.sh
+```
+
+It probes the OS / distro / package manager / Python / Node / git and the network first,
+then fills in whatever is missing — prompting before it touches a system package manager
+(`--yes` to skip the prompt, `--no-system` to never touch it), and falling back to a
+Chinese mirror when the official index is unreachable. To only *look* at your machine
+without changing anything:
+
+```bash
+bash install.sh --detect          # Windows: install.ps1 -DetectOnly
 ```
 
 Then edit three keys in `qqbot/config.json`:

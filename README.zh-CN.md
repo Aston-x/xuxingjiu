@@ -39,7 +39,7 @@
 
 ## 快速开始
 
-**一条命令装好**（会建 venv、装依赖、生成配置、跑体检）：
+**一条命令装好**（先探测本机环境、缺什么补什么，再建 venv、装依赖、生成配置、跑体检）：
 
 ```bash
 # Windows：双击 install.bat，或者
@@ -47,6 +47,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
 # Linux / macOS：
 bash install.sh
+```
+
+它会先认出操作系统 / 发行版 / 包管理器 / Python / Node / git 和网络状况，再补齐缺的：
+动系统包管理器之前会问一句（`--yes` 跳过询问，`--no-system` 一律不碰），
+官方源连不上时自动切国内镜像。只想看看本机环境、不装任何东西：
+
+```bash
+bash install.sh --detect          # Windows：install.ps1 -DetectOnly
 ```
 
 然后改 `qqbot/config.json` 里三处，就能起来了：
