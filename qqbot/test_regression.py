@@ -3747,6 +3747,19 @@ async def main():
             check("绑定必须给会话键", False, "居然过了")
         except ValueError as exc:
             check("绑定必须给会话键", "会话" in str(exc), str(exc)[:40])
+        # 前端接线：容器 + 渲染函数 + LOADERS 三处都得有（照【33】那套检查的写法）
+        _html43 = (BASE_DIR / "public" / "console.html").read_text(encoding="utf-8")
+        check("控制台接上了角色卡面板（容器 / 渲染函数 / LOADERS 三处）",
+              'id="p-cards"' in _html43
+              and "function renderPersonaCards" in _html43
+              and "renderPersonaCards, false, 'p-cards'" in _html43,
+              "少了一处：容器 id / renderPersonaCards / LOADERS 行")
+        check("角色卡面板不进 5 秒轮询（会把正在编辑的表单刷掉）",
+              "renderPersonaCards, false, 'p-cards'" in _html43)
+        check("角色卡的几个动作函数都在",
+              all(("function " + f) in _html43 for f in
+                  ("pcSaveField", "pcNew", "pcSetDefault", "pcDelete",
+                   "pcBind", "pcUnbind", "pcRelease", "reloadPersonaCards")))
     finally:
         bot.PERSONA, bot.drop_config = _real_p43, _real_drop43
         bot.update_config = _real_upd43

@@ -964,6 +964,19 @@ html.theme-anim .pill,html.theme-anim .chip,html.theme-anim .wstrip .m,html.them
       <code>config.json</code> 的 <code>providers</code> / <code>imagegen</code> 段，然后点上面的「重载配置」
       —— 不用重启进程。密钥只显示来源，不显示明文。</div>
   </div>
+
+  <div class="group-title" id="g-cards"><span class="gdot"></span>角色卡</div>
+  <div class="card wide">
+    <h2><span class="n">B22</span><svg class="ico" aria-hidden="true"><use href="#i-user"></use></svg>
+      <span class="ttl">角色卡</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadPersonaCards()">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重载</button></h2>
+    <div id="p-cards"></div>
+    <div class="note">一张卡 = 一个角色的全部设定（人设 / 世界观 / 语气 / 话术池 / 生图形象）。
+      按会话换人设也可以直接在群里发 <code>/人设 换 &lt;卡id&gt;</code>。
+      锁定模式下她的名字和长相改不动 —— 那是「本地版」要的硬约束；开源版把
+      <code>persona_lock</code> 关掉就什么都能改。</div>
+  </div>
 </section>
 
 <!-- ══════════════ 空间 ══════════════ -->
@@ -1709,6 +1722,186 @@ async function savePersona(key, btn){
     op: 'persona_set', payload: {field: key, value: el.value}, btn,
     okTitle: '人设已更新',
     after: async function(){ await renderPersona(); await loadHeader(); }
+  });
+}
+
+/* ────────── B22 角色卡 ────────── */
+// 前端只管把值交出去；"锁"由后端把关（锁着时它抛带理由的错，这里 toast 出来）。
+// 字段分三块：卡顶层（name）、prompt（六个提示词字段）、art（生图八个）。
+var PC_PROMPT = [
+  ['persona',        '人格 persona'],
+  ['world',          '世界 world'],
+  ['self_image',     '自画像 self_image'],
+  ['style_boost',    '风格强化 style_boost'],
+  ['style_format',   '格式规范 style_format'],
+  ['identity_guard', '身份红线 identity_guard']
+];
+var PC_ART = [
+  ['character_tags', '生图形象串 character_tags'],
+  ['solo_prefix',    'solo 数量词'],
+  ['duo_prefix',     'duo 数量词'],
+  ['other_person',   '对方外貌（duo）'],
+  ['ban_solo',       'solo 禁用词'],
+  ['ban_duo',        'duo 禁用词'],
+  ['ban_scenery',    '纯景禁用词'],
+  ['size',           '尺寸（JSON）']
+];
+
+function pcInput(c, field, label, isText){
+  var locked = !!(c.locked && c.locked[field]);
+  var id = 'pc-' + c.id + '-' + field;
+  var v;
+  if(field === 'name'){ v = c.name; }
+  else if(PC_ART.some(function(f){ return f[0] === field; })){ v = (c.art || {})[field]; }
+  else { v = (c.prompt || {})[field]; }
+  if(v && typeof v === 'object'){ v = JSON.stringify(v); }
+  v = (v == null) ? '' : String(v);
+  var body = isText
+    ? '<textarea id="' + id + '" rows="' + (field === 'persona' ? 4 : 2) + '"' +
+      (locked ? ' disabled' : '') + '>' + esc(v) + '</textarea>'
+    : '<input type="text" id="' + id + '" value="' + esc(v) + '"' + (locked ? ' disabled' : '') + '>';
+  return '<div class="field"><label for="' + id + '">' + esc(label) +
+    '<span class="sp"></span>' + (locked ? pill('锁着', 'warn') : '') +
+    '<button class="btn sm" onclick="pcSaveField(\'' + esc(c.id) + '\',\'' + esc(field) +
+    '\', this)"' + (locked ? ' disabled' : '') + '>保存</button></label>' + body + '</div>';
+}
+
+async function renderPersonaCards(){
+  var d = await api('/api/bot/persona');
+  if(d && d.ok === false){
+    setBox('p-cards', errBox(d.error || '角色卡取不到'), JSON.stringify(d));
+    return;
+  }
+  var cards = d.cards || [];
+  var html = '<div class="item-meta">默认卡：' + pill(d.default_card || '（一张都没有）', 'acc') +
+    '　' + (d.lock_enabled
+      ? pill('名字与长相不可改（persona_lock 开着）', 'warn')
+      : pill('全部可改', 'ok')) + '</div>';
+  if(!cards.length){
+    html += '<div class="empty">personas/ 目录是空的 —— 她会没有名字、也没有人设。</div>';
+  }
+  cards.forEach(function(c){
+    html += '<div class="field sep"><label>' + esc(c.name || c.id) + '<span class="sp"></span>' +
+      (c.default ? pill('默认', 'acc') : '') +
+      (c.id === d.default_card ? '' :
+        '<button class="btn sm" onclick="pcSetDefault(\'' + esc(c.id) + '\', this)">设为默认</button>') +
+      '<button class="btn sm danger" onclick="pcDelete(\'' + esc(c.id) + '\', this)">删除</button>' +
+      '</label><div class="mini">卡 id：<code>' + esc(c.id) + '</code>' +
+      (c.locked_any ? '　（名字和长相锁着）' : '') + '</div>';
+    html += pcInput(c, 'name', '名字 name', false);
+    PC_PROMPT.forEach(function(f){ html += pcInput(c, f[0], f[1], true); });
+    html += '<details><summary class="mini">生图字段（形象串 / 数量词 / 禁用词 / 尺寸）</summary>';
+    PC_ART.forEach(function(f){ html += pcInput(c, f[0], f[1], false); });
+    html += '<div class="note">形象串留空就用 config.json 里 sd.character_tags 那份；' +
+      '锁着的时候这一串改不动。</div></details></div>';
+  });
+  html += '<div class="field sep"><label>新建一张卡<span class="sp"></span>' +
+    '<button class="btn sm primary" onclick="pcNew(this)">新建</button></label>' +
+    '<input type="text" id="pc-new-id" placeholder="卡 id（字母数字与短横线，例如 lengdan）">' +
+    '<input type="text" id="pc-new-name" placeholder="她的名字">' +
+    '<div class="note">新卡是空的：先在 persona 里写清她是谁；生图字段留空就沿用 config 的 sd 段。</div></div>';
+  var bs = d.bindings || {};
+  var bkeys = Object.keys(bs);
+  html += '<div class="field sep"><label>按会话换人设<span class="sp"></span>' +
+    '<button class="btn sm" onclick="pcBind(this)">绑定</button></label>' +
+    '<input type="text" id="pc-bind-session" placeholder="会话键：群 g<群号> / 私聊 p<QQ号>">' +
+    '<input type="text" id="pc-bind-card" placeholder="卡 id（留空 = 解绑回默认卡）">' +
+    '<div class="item-meta">' + (bkeys.length ? bkeys.map(function(k){
+      return '<span class="chip acc">' + esc(k) + ' → ' + esc(bs[k]) +
+        ' <a href="#" onclick="pcUnbind(\'' + esc(k) + '\');return false">×</a></span>';
+    }).join('') : '<span class="mini">（还没有单独绑定的会话）</span>') + '</div>' +
+    '<div class="note">群聊里绑的就是那个群；进新群时给每个群挑一张卡就靠它（或直接发' +
+    ' <code>/人设 换 &lt;卡id&gt;</code>）。</div></div>';
+  var conf = d.conflicts || [];
+  html += '<div class="field sep"><label>config.json 里的老键<span class="sp"></span>' +
+    (conf.length ? pill(conf.length + ' 项正盖住卡', 'warn') : pill('没有', 'ok')) + '</label>';
+  if(conf.length){
+    html += '<div class="note warn">这些键还在 config.json 里、并且盖住角色卡：' +
+      conf.map(function(k){ return '<code>' + esc(k) + '</code>'; }).join('、') +
+      '。想让卡完全说了算就删掉它们（不可撤销，改前会自动留一份配置快照）。</div>' +
+      '<button class="btn sm danger" onclick="pcRelease(this)">以卡为准（删掉这些老键）</button>';
+  } else {
+    html += '<div class="note">没有跟角色卡重叠的老键 —— 现在就是以卡为准。</div>';
+  }
+  html += '</div>';
+  setBox('p-cards', html, JSON.stringify(d));
+}
+
+async function pcSaveField(cid, field, btn){
+  var el = $('pc-' + cid + '-' + field);
+  if(!el) return;
+  var value = el.value;
+  if(field === 'size'){
+    try{ value = JSON.parse(value); }
+    catch(e){
+      toast('bad', '尺寸格式不对',
+            '要写成 {"solo":[832,1216],"duo":[1216,832],"scenery":[1216,832]}');
+      return;
+    }
+  }
+  await doWrite({
+    op: 'persona_card_field', payload: {card: cid, field: field, value: value}, btn,
+    okTitle: '已保存',
+    after: async function(){ delete RENDERED['p-cards']; await renderPersonaCards(); }
+  });
+}
+
+async function pcNew(btn){
+  var cid = ($('pc-new-id') || {}).value || '';
+  var nm = ($('pc-new-name') || {}).value || '';
+  await doWrite({
+    op: 'persona_card_new', payload: {card: cid.trim(), name: nm.trim()}, btn,
+    okTitle: '已新建',
+    after: async function(){ delete RENDERED['p-cards']; await renderPersonaCards(); }
+  });
+}
+
+async function pcSetDefault(cid, btn){
+  await doWrite({
+    op: 'persona_card_default', payload: {card: cid}, btn, okTitle: '默认卡已切换',
+    after: async function(){
+      delete RENDERED['p-cards']; await renderPersonaCards(); await renderPersona();
+    }
+  });
+}
+
+async function pcDelete(cid, btn){
+  var yes = await askConfirm('删掉这张角色卡？',
+    '卡 id：' + cid + '\n绑在它身上的会话会回到默认卡。', '删除');
+  if(!yes) return;
+  await doWrite({
+    op: 'persona_card_delete', payload: {card: cid}, btn, okTitle: '已删除',
+    after: async function(){ delete RENDERED['p-cards']; await renderPersonaCards(); }
+  });
+}
+
+async function pcBind(btn){
+  var s = (($('pc-bind-session') || {}).value || '').trim();
+  var c = (($('pc-bind-card') || {}).value || '').trim();
+  await doWrite({
+    op: 'persona_bind', payload: {session: s, card: c}, btn,
+    okTitle: c ? '已绑定' : '已解绑',
+    after: async function(){ delete RENDERED['p-cards']; await renderPersonaCards(); }
+  });
+}
+
+async function pcUnbind(session){
+  await doWrite({
+    op: 'persona_bind', payload: {session: session, card: ''}, okTitle: '已解绑',
+    after: async function(){ delete RENDERED['p-cards']; await renderPersonaCards(); }
+  });
+}
+
+async function pcRelease(btn){
+  var yes = await askConfirm('删掉 config.json 里的老键？',
+    '这些键会从 config.json 里真删掉（不可撤销），之后完全以角色卡为准。\n' +
+    '改前会自动留一份配置快照到 _backup\\console-config-last.json。', '删掉');
+  if(!yes) return;
+  await doWrite({
+    op: 'persona_release', payload: {}, btn, okTitle: '已改成以卡为准',
+    after: async function(){
+      delete RENDERED['p-cards']; await renderPersonaCards(); await renderPersona();
+    }
   });
 }
 
@@ -3294,6 +3487,7 @@ var LOADERS = {
     ['limits',     renderLimits,       true,  'p-limits'],
     ['activity',   renderActivity,     true,  'p-activity'],
     ['persona',    renderPersona,      false, 'p-persona'],
+    ['cards',      renderPersonaCards, false, 'p-cards'],
     ['memory',     renderMemory,       false, 'p-memory'],
     ['groupmem',   renderGroupMemory,  false, 'p-groupmem'],
     ['mood',       renderMood,         false, 'p-mood'],
@@ -3364,6 +3558,7 @@ async function load(what){
   await runOne(m[0], m[1], m[2]);
 }
 async function loadPersona(){ await runOne('persona', renderPersona, 'p-persona'); }
+async function reloadPersonaCards(){ await runOne('cards', renderPersonaCards, 'p-cards'); }
 async function reloadQzoneFeatures(){ await runOne('qzone-features', renderQzoneFeatures, 'q-features'); }
 async function reloadLogs(){ await runOne('logs', renderLogs, 'p-logs'); }
 async function reloadActivity(){ await runOne('activity', renderActivity, 'p-activity'); }
