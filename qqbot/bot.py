@@ -94,6 +94,28 @@ if sys.stdout is not None:
     _sh.setFormatter(_fmt)
     logger.addHandler(_sh)
 
+# ── 人设层 ────────────────────────────────────────────────────────────
+# 人设字段（persona / world / self_image / style_* / 生图形象串…）统一从角色卡取，
+# 见 qqbot/persona.py。config.json 里的老键仍然**优先**（迁移期的桥），所以老安装
+# 升级上来行为一字不变；按会话/按群换人设走 persona_bindings.json。
+# 必须放在 CFG 之后：卡库要读 CFG 判 lock、做老键覆盖。
+from persona import PersonaLibrary  # noqa: E402
+
+PERSONA = PersonaLibrary(BASE, CFG)
+
+
+def session_key(is_group: bool, group_id=None, user_id=None) -> str:
+    """会话键：群聊 g<群号>，私聊 p<QQ号>。
+
+    ★ 必须和 handle_message 里原来那行算得一模一样（人设绑定、冷却、上下文都按它
+    分桶）。统一从这里出，免得哪天只改了一处 —— 那会变成"提示词按 A 算、冷却按 B 算"，
+    这种错极难查。拿不到 id 时返回空串，下游会退回默认卡。
+    """
+    if is_group:
+        return f"g{group_id}" if group_id not in (None, "") else ""
+    return f"p{user_id}" if user_id not in (None, "") else ""
+
+
 CQ_PATTERN = re.compile(r"\[CQ:[^\]]+\]")
 
 
@@ -707,8 +729,44 @@ def dedupe_key(t: str) -> str:
     return re.sub(r"[\s，。！？、,.!?~\-…\"'“”‘’]+", "", t or "")[:120]
 
 
-SELF_NAMES = ("许杏玖", "杏玖", "玖玖", "小玖")
-NAME_PREFIX = re.compile(r"^\s*(?:许杏玖|杏玖|玖玖|小玖)\s*[：:]\s*")
+# 名字不再写死在代码里：每张角色卡自带 name + aliases，多套人设下"她叫什么"跟着会话走。
+# 判断"有没有在喊她"用 self_names(会话键)；判断"她自报家门"用 strip_name_prefix()。
+def self_names(sk: str = "") -> tuple[str, ...]:
+    """这个会话那张卡的名字（本名 + 别名）。一张卡都没有时返回空 —— 她也就不认名字了，
+    所以 personas/ 里必须至少有一张卡（随仓库发的那张就是了）。"""
+    try:
+        return PERSONA.names(sk)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def _name_prefix_re() -> re.Pattern:
+    """把**所有**卡的名字拼成一个前缀正则：任何一张卡的名字开头都会被去掉。
+
+    故意取并集而不是按会话取：clean_reply 有十来处调用点，多数手里没有会话键；
+    而"她自报家门"本来就是模型的偶发行为，宁可多去一点也别漏。
+    """
+    names: set[str] = set()
+    try:
+        for c in PERSONA.cards.values():
+            names.add(str(c.get("name") or "").strip())
+            names.update(str(a).strip() for a in (c.get("aliases") or []))
+    except Exception:  # noqa: BLE001
+        pass
+    names = {n for n in names if n}
+    if not names:
+        # 没有卡时给一个永不匹配的正则，别让 re.compile("") 把每句话开头都吃掉
+        return re.compile(r"(?!)")
+    joined = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(r"^\s*(?:" + joined + r")\s*[：:]\s*")
+
+
+NAME_PREFIX = _name_prefix_re()
+
+
+def strip_name_prefix(text: str) -> str:
+    """去掉她自报家门的前缀（「许杏玖：」这种）。"""
+    return NAME_PREFIX.sub("", text)
 INTEREST_WORDS = ("哈哈", "笑死", "离谱", "绝了", "无语", "服了", "真的假的", "真的吗",
                   "牛", "卧槽", "我靠", "为什么", "咋", "怎么", "谁啊", "啊？")
 
@@ -814,7 +872,7 @@ def drop_tags(text: str, *patterns) -> str:
 
 def clean_reply(text: str) -> str:
     """模型偶尔会自报家门，去掉名字前缀；顺手把换行和不可见字符规范化。"""
-    return normalize_reply(NAME_PREFIX.sub("", text)) or normalize_reply(text)
+    return normalize_reply(strip_name_prefix(text)) or normalize_reply(text)
 
 
 class Attention:
@@ -5643,20 +5701,24 @@ def build_system(is_group: bool, life: dict | None = None, group_id=None,
     注意：撤回的是"怎么写标记"的说明书，不是功能本身 ——
     她该点赞还是点赞，只是这一轮由调用方按 JSON 去执行。
     """
-    parts = [CFG.get("persona", "你是一个有用的助手。")]
-    if CFG.get("world"):
-        parts.append("（" + CFG["world"] + "）")
+    # 这一轮用哪张角色卡：按会话取（群里绑的卡 / 私聊绑的卡 / 否则默认卡）。
+    # config.json 里的老键仍然压过卡里的同名字段，所以老安装的输出一字不变 ——
+    # 这件事由 tools/dump_prompts.py 的改前/改后 diff 守着，别绕过它。
+    pf = PERSONA.prompt_fields(session_key(is_group, group_id, speaker_id))
+    parts = [pf.get("persona") or "你是一个有用的助手。"]
+    if pf.get("world"):
+        parts.append("（" + pf["world"] + "）")
     # 她自己的样子。外貌在 SD 那边由 character_tags 锁死，这里只要"别改口"
-    if CFG.get("self_image"):
-        parts.append(f"（你长这样：{CFG['self_image']}。"
+    if pf.get("self_image"):
+        parts.append(f"（你长这样：{pf['self_image']}。"
                      "问你长相、让你说说自己，就照这个说，别改。）")
-    if CFG.get("style_boost"):
-        parts.append(CFG["style_boost"])
-    if CFG.get("style_format"):
-        parts.append(CFG["style_format"])
+    if pf.get("style_boost"):
+        parts.append(pf["style_boost"])
+    if pf.get("style_format"):
+        parts.append(pf["style_format"])
     # 身份红线常驻（破功是最贵的错），参照池另说 —— 只在对方问到身份时才注入
-    if CFG.get("identity_guard"):
-        parts.append(CFG["identity_guard"])
+    if pf.get("identity_guard"):
+        parts.append(pf["identity_guard"])
     # 记忆按人存，跨群私聊都认得；当前说话的人会排在记忆块最前面
     facts = MEMORY.render(speaker_id)
     if facts:
@@ -6290,7 +6352,8 @@ async def handle_message(ev: dict) -> None:
     nickname = sender.get("nickname") or str(user_id)
 
     text, at_me, images, mfaces = parse_message(ev.get("message"), OB.self_id)
-    mentioned = any(n in text for n in SELF_NAMES)
+    # 按会话取名字：群里绑了别的卡时，"喊她"要认的是那张卡的名字（多套人设的前提）
+    mentioned = any(n in text for n in self_names(session_key(is_group, group_id, user_id)))
     life = LIFE.current()
     life["weather"] = await WEATHER.phrase()
 
@@ -6457,7 +6520,7 @@ async def handle_message(ev: dict) -> None:
     if not text and not images and not mfaces:
         return
 
-    key = f"g{group_id}" if is_group else f"p{user_id}"
+    key = session_key(is_group, group_id, user_id)
     now = time.time()
     cooldown = float(CFG.get("group_cooldown_seconds", 0))
     if cooldown and now - CHAT.last_reply_at.get(key, 0) < cooldown:

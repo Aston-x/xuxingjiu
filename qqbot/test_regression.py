@@ -3435,6 +3435,32 @@ async def main():
                   _crlf37 == 0 and not _bom37s,
                   f"CRLF={_crlf37} BOM={_bom37s}")
 
+    # 【38】人设层接线：提示词和人名必须从角色卡出，而不是写死在代码里
+    print("\n【38】人设层接线（角色卡 → 提示词 / 人名）")
+    _pf38 = bot.PERSONA.prompt_fields("")
+    _f38 = ("persona", "world", "self_image", "style_boost", "style_format", "identity_guard")
+    check("6 个提示词字段都能从角色卡取到", all(_pf38.get(k) for k in _f38),
+          f"缺：{[k for k in _f38 if not _pf38.get(k)]}")
+    check("老键优先：卡里的 persona 就是 config.json 里那个（迁移期不断档）",
+          bot.CFG.get("persona") is None or _pf38["persona"] == bot.CFG.get("persona"),
+          "卡和 config 对不上（老安装升级上来会换人设）")
+    check("session_key 与老算法一致（群 / 私聊）",
+          bot.session_key(True, 999, 10001) == "g999"
+          and bot.session_key(False, None, 10001) == "p10001")
+    check("拿不到 id 时会话键是空串（下游退回默认卡）",
+          bot.session_key(True, None, None) == ""
+          and bot.session_key(False, None, None) == "")
+    check("人名来自角色卡，不是写死的",
+          bot.self_names("") == ("许杏玖", "杏玖", "玖玖", "小玖"), str(bot.self_names("")))
+    check("代码里不再有写死的 SELF_NAMES", not hasattr(bot, "SELF_NAMES"))
+    check("自报家门的前缀会被去掉",
+          bot.strip_name_prefix("许杏玖：在呢") == "在呢"
+          and bot.clean_reply("杏玖: 干嘛") == "干嘛")
+    check("名字不在卡里时不会把整句话吃掉", bot.strip_name_prefix("在呢") == "在呢")
+    check("build_system 真的读到了角色卡",
+          _pf38["persona"][:20] in bot.build_system(True, bot.LIFE.current(), 999, 10001),
+          "群聊提示词里没出现卡里的 persona")
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]
