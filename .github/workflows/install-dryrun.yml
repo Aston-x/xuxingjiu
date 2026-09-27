@@ -71,6 +71,8 @@ jobs:
           Write-Host "install.bat 退出码 = $rc"
           # 只读干跑时没有 venv、跳过 npm，返回 1 是预期值，不是失败
           if ($rc -ne 0 -and $rc -ne 1) { throw "install.bat 意外退出码：$rc" }
+          # 同上：cmd.exe 的退出码会被 pwsh 带出进程，不显式收尾这一步永远红。
+          exit 0
 
       # 环境探测是安装链路里唯一能在三种系统上都真跑的环节，所以必须每平台真跑一遍。
       # 报告写到 $RUNNER_TEMP（仓库外），免得污染工作区、影响下面那条"只读"断言。
