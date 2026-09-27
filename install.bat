@@ -34,6 +34,20 @@ echo.
 echo   XiaoXingJiu  -  one-click installer (Windows)
 echo   ---------------------------------------------
 echo.
+echo   Just double-click it, or pass flags through to install.ps1:
+echo.
+echo     -DetectOnly [-Json]   probe this machine only, change nothing
+echo     -CheckOnly            dry run (CI), change nothing
+echo     -Yes                  unattended: install system deps without asking
+echo     -NoSystem             never touch the system package manager
+echo     -DryRun               print the plan, do nothing
+echo     -Mirror ^<mode^>        auto ^(default^) / off / tuna / aliyun
+echo     -WithBrowser          also install Playwright chromium ^(~150 MB^)
+echo     -AllowDownload        allow downloading the python.org installer
+echo     -TargetDir ^<path^>     -RepoUrl ^<url^>
+echo.
+echo   Example:  install.bat -DetectOnly
+echo.
 
 where powershell >nul 2>&1
 if errorlevel 1 (
