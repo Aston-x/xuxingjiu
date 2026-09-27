@@ -3727,13 +3727,27 @@ class ChatLog:
         return k or "（无会话）"
 
     def find(self, kw: str = "", limit: int = 40) -> list[dict]:
-        """翻记录。关键词按"任一个字命中"算 —— 中文不做分词，比精确匹配好使得多；
-        空关键词就是"最近的若干条"。"""
-        rows = self.rows
-        if str(kw or "").strip():
-            chars = [c for c in str(kw).strip() if not c.isspace()]
-            rows = [r for r in rows if any(c in str(r.get("text") or "") for c in chars)]
-        return rows[-max(1, int(limit)):]
+        """翻记录。空关键词就是"最近的若干条"。
+
+        有关键词时按「命中了几个不同的字」算，而且要过一半才留下：
+        中文不做分词，若只按"任一个字命中"，「不存在的东西」会命中任何带"的"的话 ——
+        翻回来一堆不相干的，她照着答就变成答非所问。门槛跟着关键词长度走，
+        两三个字的词照旧一两个字就能中。
+        命中多的排前面（一样多时近的优先），她看到的第一条就是最贴题的。
+        """
+        limit = max(1, int(limit))
+        kw = str(kw or "").strip()
+        chars = {c for c in kw if not c.isspace()}
+        if not chars:
+            return self.rows[-limit:]
+        need = max(1, (len(chars) + 1) // 2)
+        scored: list[tuple[int, int, dict]] = []
+        for i, r in enumerate(self.rows):
+            got = sum(1 for c in chars if c in str(r.get("text") or ""))
+            if got >= need:
+                scored.append((got, i, r))
+        scored.sort(key=lambda t: (-t[0], -t[1]))
+        return [r for _, _, r in scored[:limit]]
 
     def render(self, kw: str = "", limit: int = 40) -> str:
         out = []

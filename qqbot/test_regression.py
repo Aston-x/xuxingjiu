@@ -77,7 +77,7 @@ ISO_DIR.mkdir(exist_ok=True)
 _REAL_STATE_FILES = ("config.json", "memory.json", "mood.json", "qzone_state.json",
                      "sd_state.json", "life_state.json", "bili_state.json",
                      "group_memory.json", "groups.json", "qzone_comment_state.json",
-                     "state/tokens.json", "state/weather_state.json")
+                     "chat_log.json", "state/tokens.json", "state/weather_state.json")
 _ISO_SAVED: list[tuple] = []
 
 
@@ -115,6 +115,9 @@ def isolate_state() -> None:
         # 天气快照与 token 累计现在也落盘（state/ 下），不指开就会写坏真实文件
         (bot.WEATHER, "state_path", ISO_DIR / "weather_state.json"),
         (bot, "TOKENS_PATH", ISO_DIR / "tokens.json"),
+        # 跨会话流水：测试里"发个说说"这类消息会顺手 CHATLOG.record()，
+        # 不指开就会把测试消息写进用户真实的 chat_log.json（真踩过）。
+        (bot.CHATLOG, "path", ISO_DIR / "chat_log.json"),
     ]
     for obj, attr, tmp in targets:
         if obj is None or not hasattr(obj, attr):
@@ -3656,7 +3659,7 @@ async def main():
     # 【42】跨会话合并的聊天流水
     print("\n【42】跨会话聊天记录")
     _cl42 = bot.ChatLog()
-    _cl42.path = BASE_DIR / "_tmp_chatlog42.json"
+    _cl42.path = ISO_DIR / "_tmp_chatlog42.json"
     _cl42.rows = []
     _cl42.record("g999", "小明", "今天下午去书店吗")
     _cl42.record("p10001", "小红", "书店那事我也想去")
@@ -3668,6 +3671,16 @@ async def main():
     check("中文按单字命中（不分词也能翻到）", len(_cl42.find("书")) == 2)
     check("翻不到就是空", _cl42.find("外星人") == [])
     check("关键词留空 = 翻最近的", len(_cl42.find("")) == 3)
+    # 只按"任一个字命中"的话，「不存在的东西」会命中任何带"的"的话（下面这条就是），
+    # 她照着答就变成答非所问。门槛改成"命中超过一半的字"。
+    _cl42.record("g999", "小明", "今天的作业写完了吗")
+    check("长关键词里的虚词不算命中（翻不到）", _cl42.find("不存在的东西") == [],
+          str([r["text"] for r in _cl42.find("不存在的东西")]))
+    check("贴题的照旧翻得到", len(_cl42.find("今天下午书店")) == 1,
+          str([r["text"] for r in _cl42.find("今天下午书店")]))
+    check("命中多的排前面（不是按时间）",
+          (_cl42.find("书店那事") or [{}])[0].get("text") == "书店那事我也想去",
+          str([r["text"] for r in _cl42.find("书店那事")]))
     _r42 = _cl42.render("书店")
     check("渲染里带会话标签和说话人", "书店那事" in _r42 and "小红" in _r42, _r42[:110])
     check("她说的话渲染成「她」", "她：行啊" in _cl42.render("行啊"), _cl42.render("行啊")[:80])
