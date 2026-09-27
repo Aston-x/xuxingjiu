@@ -120,6 +120,17 @@ npm run typecheck && npm run test:unit
 回归 **【37】** 段、`tools/preflight.sh` 第 6 步、CI `install-dryrun.yml` 的「脚本编码守卫」都会拦。
 改完跑一次 `python tools/normalize_scripts.py` 看有没有飘红。
 
+### 4. 依赖用「版本下限 >=」，别钉死 ==
+
+项目要在多个 Python 上跑（实测 3.11 / 3.13，CI 另测 3.14）。`requirements.txt` 里
+**只能用 `>=` 下限，不能 `==` 钉死某个版本**：pillow / websockets 这类带 C 扩展的包，
+一旦钉死「在某个老 Python 上解析出的版本」，在新 Python（如 3.14）上往往没有对应的
+预编译 wheel，pip 只能回退源码编译，在没装 C 编译器的机器上直接失败
+（表现就是「python3.14 环境就用不了」）。
+
+要可复现构建时：`pip freeze > requirements.lock.txt` 锁一份，用那份 lock 装即可。
+升级依赖后必须跑三套测试（test_regression / test_providers / test_imagegen）。
+
 ---
 
 ## 提交 PR

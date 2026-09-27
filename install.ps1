@@ -48,7 +48,8 @@ if ("许杏玖".Length -ne 3) {
 # ── 1. 环境 ──────────────────────────────────────────────────────────
 Say "1/6 环境检查"
 $py = $null
-foreach ($c in @("python", "py")) {
+# 候选里含 python3.14：系统只装了 3.14 且没把 python 设成默认时也能找到。
+foreach ($c in @("python", "py", "python3.14")) {
   try {
     $v = & $c -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
     if ($LASTEXITCODE -eq 0 -and [version]$v -ge [version]"3.11") { $py = $c; break }

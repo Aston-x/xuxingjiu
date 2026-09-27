@@ -1,18 +1,30 @@
-# QQ 机器人直接依赖（版本锁定为 2026-09-26 实测的 .venv 状态）
-# 安装：.venv\Scripts\python.exe -m pip install -r requirements.txt
-# 重建环境：python -m venv .venv && .venv\Scripts\python.exe -m pip install -r requirements.txt
+# QQ 机器人直接依赖（最小版本下限，不是锁定）
+#
+# 为什么用 >= 而不是 ==：
+#   项目要能在多个 Python 版本上跑（实测 3.11 / 3.13，CI 另测 3.14）。
+#   如果钉死「在某个老 Python 上解析出的版本」，pillow / websockets 这类带 C 扩展
+#   的包在更新的 Python（如 3.14）上往往没有对应的预编译 wheel，pip 只能回退源码
+#   编译 —— 在没装 C 编译器的机器上直接失败，表现就是「python3.14 环境就用不了」。
+#   改成 >= 下限后，pip 会为每个 Python 选「有 wheel 且兼容」的较新版本。
+#
+# 想要可复现构建（锁死版本）时：
+#   .venv\Scripts\python.exe -m pip freeze > requirements.lock.txt
+#   之后用 `pip install -r requirements.lock.txt` 即可完全复现本机环境。
+#
+# 升级依赖后务必跑 qqbot 三套测试确认没破坏行为：
+#   test_regression.py / test_providers.py / test_imagegen.py
 
 # --- 直接依赖 ---
-httpx==0.28.1          # LLM / SD / QZone bridge 的异步 HTTP 客户端
-websockets==17.1       # NapCat 反向 WS 服务端
-pillow==12.3.0         # 图片缩放（_shrink_image）；延迟导入
-qrcode==8.2            # bilibili 扫码登录；延迟导入
+httpx>=0.28.1          # LLM / SD / QZone bridge 的异步 HTTP 客户端
+websockets>=17.1       # NapCat 反向 WS 服务端
+pillow>=12.3.0         # 图片缩放（_shrink_image）；延迟导入
+qrcode>=8.2            # bilibili 扫码登录；延迟导入
 
-# --- 以下为上述包的传递依赖，显式锁定以保证可复现 ---
-anyio==4.15.1
-certifi==2026.7.22
-colorama==0.4.6
-h11==0.16.0
-httpcore==1.0.9
-idna==3.20
-typing_extensions==4.16.0
+# --- 以下为上述包的传递依赖，给最小下限即可（让 pip 在新 Python 上选兼容版本）---
+anyio>=4.15.1
+certifi>=2026.7.22
+colorama>=0.4.6
+h11>=0.16.0
+httpcore>=1.0.9
+idna>=3.20
+typing_extensions>=4.16.0

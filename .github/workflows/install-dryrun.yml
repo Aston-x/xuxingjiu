@@ -16,11 +16,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "${{ matrix.python-version }}"
 
       # 先守编码：.bat 必须纯 ASCII、含中文的 .ps1 必须带 BOM、.sh 必须 LF。
       # 这是"本地测试抓不到、但用户打开就炸"的一类问题 —— 曾经 install.bat

@@ -28,13 +28,23 @@ die()  { printf '  ❌ %s\n' "$*" >&2; exit 1; }
 # ── 1. 环境 ──────────────────────────────────────────────────────────
 say "1/6 环境检查"
 PY=""
-for c in python3.13 python3.12 python3.11 python3; do
+# 明确列出的优先（避免不同机器上 python3 指向不一致）；含 3.14 以兼容新版 Python。
+# 兜底再扫 python3.11~3.20：防止系统只装了某个小版本（如 3.14）且没建 python3 软链。
+for c in python3.14 python3.13 python3.12 python3.11 python3; do
   if command -v "$c" >/dev/null 2>&1; then
     if "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then
       PY="$c"; break
     fi
   fi
 done
+if [ -z "$PY" ]; then
+  for n in $(seq 11 20); do
+    c="python3.$n"
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then
+      PY="$c"; break
+    fi
+  done
+fi
 [ -n "$PY" ] || die "找不到 Python 3.11+。Debian/Ubuntu: sudo apt install python3 python3-venv"
 ok "Python: $("$PY" --version 2>&1) ($PY)"
 
