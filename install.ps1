@@ -1,5 +1,13 @@
-<#
+﻿<#
   许杏玖 · 一键安装（Windows）
+
+  ⚠️ 本文件必须存为 **UTF-8 with BOM**。
+     Windows PowerShell 5.1 对没有 BOM 的 .ps1 会按系统 ANSI 代码页
+     （中文 Windows = GBK/936）解码，于是文件里所有中文都变成乱码，
+     连报错信息都读不懂。这不是"显示问题"，是解码错误。
+     改文件时如果你的编辑器默认存成"UTF-8 无 BOM"，请手动切到
+     "UTF-8 with BOM"。同目录的 install.bat 则是**纯 ASCII**，
+     两者规则相反，别互相拷贝风格。
 
   做这些事（**幂等**，重复跑不会破坏已有配置）：
     1. 环境检查（python / node / git）
@@ -25,6 +33,17 @@ function Say($m)  { Write-Host "`n$m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "  [!!] $m" -ForegroundColor Yellow }
 function Die($m)  { Write-Host "  [xx] $m" -ForegroundColor Red; exit 1 }
+
+# ── 0. 自保：确认这份脚本真被当作 UTF-8 读进去了 ──────────────────────
+# 判据用**长度**而不是字符串比较 —— 字面量在被误解码时也是乱的，
+# 拿它跟谁比都是自指。而长度骗不了人：「许杏玖」是 3 个字 / 9 个字节，
+# 一旦被按 GBK 两字节一组错配，就会塌成 4~5 个字符。
+# （BOM 缺失，或编辑器另存为"UTF-8 无 BOM"时命中）
+if ("许杏玖".Length -ne 3) {
+  Write-Host "  [!!] 本脚本的中文没被正确解码（很可能存成了 UTF-8 无 BOM）。" -ForegroundColor Yellow
+  Write-Host "       安装逻辑照常会跑，但下面的中文提示会是乱码。" -ForegroundColor Yellow
+  Write-Host "       修法：把 install.ps1 另存为 'UTF-8 with BOM' 再重跑。" -ForegroundColor Yellow
+}
 
 # ── 1. 环境 ──────────────────────────────────────────────────────────
 Say "1/6 环境检查"

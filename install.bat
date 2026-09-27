@@ -1,39 +1,68 @@
 @echo off
-REM ─────────────────────────────────────────────────────────────
-REM 许杏玖 · 一键安装（Windows 双击入口）
-REM
-REM 为什么要有这个 .bat：Windows 默认的执行策略会把 .ps1 直接拦下，
-REM 双击 .ps1 多半只看到一闪而过的窗口。这里用 Bypass 起 PowerShell，
-REM 并在最后 pause，让双击的人能看到结果。
-REM
-REM 逻辑**不在这里**重复实现 —— 全部在 install.ps1 里，避免两份代码走偏。
-REM ─────────────────────────────────────────────────────────────
 chcp 65001 >nul
+REM =============================================================
+REM  XiaoXingJiu installer - Windows double-click entry point
+REM
+REM  WHY THIS FILE IS PURE ASCII (never add CJK text here):
+REM    cmd.exe decodes a .bat with the console code page (936/GBK on
+REM    a Chinese Windows). UTF-8 CJK bytes get mis-paired, which
+REM    swallows the next ASCII character and desyncs the parser -
+REM    the result is a wall of "'xxx' is not recognized as an
+REM    internal or external command" errors, and even "install.ps1"
+REM    degrades into "nstall.ps1".
+REM    Measured: any CJK before "chcp 65001" always breaks the file;
+REM    and even with chcp on line 2 it still breaks when the .bat is
+REM    CALLed from another .bat. Pure ASCII has no such failure mode.
+REM    All Chinese output lives in install.ps1 (UTF-8 with BOM).
+REM    Run "python tools/normalize_scripts.py" to check.
+REM
+REM  WHY A .bat AT ALL:
+REM    The default PowerShell execution policy blocks .ps1, so
+REM    double-clicking install.ps1 just flashes a window. This
+REM    launches it with -ExecutionPolicy Bypass and pauses at the
+REM    end so a double-click user can actually read the result.
+REM
+REM  LOGIC IS NOT DUPLICATED HERE - it all lives in install.ps1.
+REM
+REM  Non-interactive use (CI / scripting): set QQBOT_NO_PAUSE=1
+REM  to skip the final keypress wait.
+REM =============================================================
+setlocal
 cd /d "%~dp0"
 
 echo.
-echo   许杏玖 · 一键安装
+echo   XiaoXingJiu  -  one-click installer (Windows)
 echo   ---------------------------------------------
 echo.
 
 where powershell >nul 2>&1
 if errorlevel 1 (
-  echo   [xx] 找不到 powershell。请手动装 Python 3.11+ 后按 docs\部署-Windows.md 操作。
-  pause
+  echo   [xx] powershell not found.
+  echo        Install Python 3.11+ ^(tick "Add to PATH"^) and read the
+  echo        deployment guide under docs\ before retrying.
+  if not defined QQBOT_NO_PAUSE (
+    echo.
+    echo   Press any key to close this window . . .
+    pause >nul
+  )
   exit /b 1
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
-set RC=%ERRORLEVEL%
+set "RC=%ERRORLEVEL%"
 
 echo.
 if "%RC%"=="0" (
-  echo   安装完成，体检全绿。
+  echo   Done - all health checks passed.
 ) else if "%RC%"=="1" (
-  echo   安装完成，但体检有几项警告，往上翻看 [!!] 那几行。
+  echo   Done, but some checks raised warnings. Scroll up for the [!!] lines.
 ) else (
-  echo   安装过程中有错误，往上翻看 [xx] 那几行。
+  echo   Finished with errors. Scroll up for the [xx] lines.
 )
-echo.
-pause
+
+if not defined QQBOT_NO_PAUSE (
+  echo.
+  echo   Press any key to close this window . . .
+  pause >nul
+)
 exit /b %RC%

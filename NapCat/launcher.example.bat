@@ -1,18 +1,26 @@
 @echo off
 chcp 65001 >nul
-REM ─────────────────────────────────────────────────────────────
-REM NapCat 启动模板（相对路径版，可整体搬目录）
+REM -------------------------------------------------------------
+REM NapCat launcher template (relative-path version, directory-safe)
 REM
-REM 与上游 launcher-user.bat 的区别：
-REM   1. 全部路径用 %~dp0 推导，不依赖当前工作目录；
-REM   2. 优先读环境变量 QQ_EXE，其次才去注册表找 —— 因为
-REM      部分受限环境（企业策略 / 安全软件 / 沙箱）会把 reg.exe 拦掉，
-REM      而上游脚本硬依赖 reg.exe，那种环境里会直接失败。
+REM PURE ASCII ON PURPOSE. cmd.exe decodes .bat files with the console
+REM code page (936/GBK on Chinese Windows). UTF-8 CJK bytes get
+REM mis-paired, swallowing the following ASCII character and desyncing
+REM the parser -> a wall of "'xxx' is not recognized" errors.
+REM Chinese documentation lives in NapCat\README.md and docs\.
 REM
-REM 用法：
-REM   set QQ_EXE=D:\path\to\QQ.exe        （可省略，省略时才查注册表）
+REM Differences from the upstream launcher-user.bat:
+REM   1. every path is derived from %~dp0, so the current working
+REM      directory does not matter;
+REM   2. prefers the QQ_EXE environment variable and only falls back to
+REM      the registry -- upstream hard-depends on reg.exe, which some
+REM      hardened environments (group policy / security suites / sandboxes)
+REM      block outright.
+REM
+REM Usage:
+REM   set QQ_EXE=D:\path\to\QQ.exe        (optional; registry is used otherwise)
 REM   launcher.example.bat
-REM ─────────────────────────────────────────────────────────────
+REM -------------------------------------------------------------
 setlocal
 cd /d "%~dp0"
 
@@ -23,34 +31,39 @@ set "NAPCAT_LAUNCHER_PATH=%~dp0NapCatWinBootMain.exe"
 set "NAPCAT_MAIN_PATH=%~dp0napcat.mjs"
 
 if not exist "%NAPCAT_MAIN_PATH%" (
-  echo [错误] 没找到 napcat.mjs —— 请先按 README.md 把 NapCat 本体解压到本目录。
+  echo [ERROR] napcat.mjs not found.
+  echo         Unpack the NapCat release into this directory first
+  echo         ^(see README.md^).
   pause
   exit /b 1
 )
 
 set "QQPath=%QQ_EXE%"
 if not exist "%QQPath%" (
-  echo [信息] 环境变量 QQ_EXE 未设置或无效，改从注册表查找 QQ 安装路径……
+  echo [INFO] QQ_EXE is unset or invalid; falling back to the registry...
   for /f "tokens=2*" %%a in ('reg query "HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\QQ" /v "UninstallString"') do set "RetString=%%~b"
   for %%a in ("%RetString%") do set "QQPath=%%~dpaQQ.exe"
 )
 
 if not exist "%QQPath%" (
-  echo [错误] 找不到 QQ.exe。请设置环境变量 QQ_EXE 指向它，例如：
-  echo        set QQ_EXE=D:\Program Files\Tencent\QQNT\QQ.exe
+  echo [ERROR] QQ.exe not found. Set QQ_EXE to its full path, e.g.:
+  echo         set QQ_EXE=D:\Program Files\Tencent\QQNT\QQ.exe
   pause
   exit /b 1
 )
 
-echo [信息] QQ       = %QQPath%
-echo [信息] NapCat   = %NAPCAT_MAIN_PATH%
+echo [INFO] QQ     = %QQPath%
+echo [INFO] NapCat = %NAPCAT_MAIN_PATH%
 
-REM 生成注入用的加载脚本（内容是本目录的绝对路径，注意正斜杠）
+REM Build the injection loader. The content is this directory's absolute
+REM path, with forward slashes on purpose.
 set "NAPCAT_MAIN_POSIX=%NAPCAT_MAIN_PATH:\=/%"
 echo (async () =^> {await import("file:///%NAPCAT_MAIN_POSIX%")})() > "%NAPCAT_LOAD_PATH%"
 
 "%NAPCAT_LAUNCHER_PATH%" "%QQPath%" "%NAPCAT_INJECT_PATH%" %*
 
 echo.
-echo [信息] 如果 QQ 起来又自己退出，多半是**需要登录机器人号** —— 这个窗口里能看到 QQ 的提示。
+echo [INFO] If QQ starts and then exits by itself, it is almost always
+echo        waiting for you to log in as the BOT account - the QQ window
+echo        itself will show the prompt.
 pause

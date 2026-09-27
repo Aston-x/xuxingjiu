@@ -64,6 +64,27 @@ else
   printf '\033[32m✔ 没有敏感的配置文件被跟踪\033[0m\n'
 fi
 
+# 6) 脚本编码与换行符。
+#    这条是用血换来的：install.bat 曾经整篇中文注释、而 chcp 65001 压在第 11 行，
+#    cmd.exe 按 GBK 逐行解码批处理时把中文的半个字节错配出去，
+#    整个脚本散架成一片「'xxx' 不是内部或外部命令」，连 install.ps1 都变成
+#    'nstall.ps1'。这种问题本地跑测试抓不到 —— 只能在这里守。
+PY_BIN=""
+for _c in python python3 py; do
+  if command -v "$_c" >/dev/null 2>&1; then PY_BIN="$_c"; break; fi
+done
+if [ -z "$PY_BIN" ]; then
+  printf '\033[33m~ 环境里没有 python，跳过脚本编码检查\033[0m\n'
+elif [ ! -f tools/normalize_scripts.py ]; then
+  printf '\033[33m~ 找不到 tools/normalize_scripts.py，跳过\033[0m\n'
+elif "$PY_BIN" tools/normalize_scripts.py --quiet; then
+  printf '\033[32m✔ 脚本编码/换行符合规（.bat 纯 ASCII、.ps1 带 BOM、.sh 是 LF）\033[0m\n'
+else
+  printf '\n\033[31m✘ 脚本编码/换行符不合规\033[0m\n'
+  echo "  修：$PY_BIN tools/normalize_scripts.py --fix（能自动修的大部分会自动修）"
+  FAIL=1
+fi
+
 echo "----------------------------------------"
 if [ "$FAIL" = "0" ]; then
   echo "全部通过，可以推送。"

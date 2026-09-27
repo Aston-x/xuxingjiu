@@ -34,6 +34,19 @@ INCLUDE = [
 PREFIX = "xuxingjiu-installer"
 
 
+def _text_with_bom(data: bytes) -> bytes:
+    """给 zip 里的 .txt 补 UTF-8 BOM。
+
+    用户拿到包，第一眼打开的就是「安装说明.txt」。Windows 记事本虽然新版
+    能猜 UTF-8，但老版本、以及不少压缩软件的内置预览，都会把无 BOM 的
+    UTF-8 按 GBK 显示 —— 整篇中文乱码，用户连第一步都读不懂。
+    加 BOM 是这类"给人看的纯文本"最省事的保险。
+    """
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data
+    return b"\xef\xbb\xbf" + data
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="1.0.0")
@@ -48,13 +61,17 @@ def main() -> int:
     DIST.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for rel in INCLUDE:
-            # doctor.py 在 zip 里放到根，方便安装脚本引用（脚本里也兼容两种位置）
-            name = pathlib.Path(rel).name if rel.endswith("doctor.py") else pathlib.Path(rel).name
-            z.write(ROOT / rel, f"{PREFIX}/{name}")
+            # 统一摊平到 zip 根，别多套一层目录，用户解压完一眼能看全
+            name = pathlib.Path(rel).name
+            data = (ROOT / rel).read_bytes()
+            if pathlib.Path(rel).suffix.lower() == ".txt":
+                data = _text_with_bom(data)
+            z.writestr(f"{PREFIX}/{name}", data)
         # 附一份源码包地址的占位说明，避免用户拿到 zip 不知道去哪 clone
-        z.writestr(f"{PREFIX}/SOURCE.txt",
-                   "源码地址：请填入你的仓库 URL\n"
+        src_txt = ("源码地址：请填入你的仓库 URL\n"
                    "（install.sh / install.ps1 的 REPO_URL 默认值就是它）\n")
+        z.writestr(f"{PREFIX}/SOURCE.txt",
+                   _text_with_bom(src_txt.encode("utf-8")))
 
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     print(f"已生成：{out}")

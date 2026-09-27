@@ -29,7 +29,7 @@
 --------
   1. 改 qqbot/config.json：
        bot_qq         机器人 QQ 号
-       admin.user_ids 你自己的 QQ 号
+       admin.user_ids 管理员的 QQ 号
        access_token   自己编一串随机字符（QQ 接入端要填一样的）
   2. 配模型：设环境变量（如 DEEPSEEK_API_KEY），或在 providers.endpoints 里
      指向本地模型（LM Studio / Ollama …）

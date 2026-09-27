@@ -99,6 +99,27 @@ npm run typecheck && npm run test:unit
 `_get_path` 遇到 list 会返回 None，`update_config` 写带索引的路径会**把 list 覆写成 dict**
 （数据损坏）。所以端点在控制台里是**只读**的，改端点请改 `config.json` 然后点「重载配置」。
 
+### 3. 脚本编码（.bat 纯 ASCII / .ps1 带 BOM / .sh 是 LF）
+
+这一条是「下载下来双击就炸」的头号元凶 —— 用户在新环境报
+`'xxx' 不是内部或外部命令`、`'nstall.ps1' 不是内部或外部命令` 就是它。
+
+- **`.bat` / `.cmd` 必须纯 ASCII（0 个非 ASCII 字节）**。
+  `cmd.exe` 用**控制台代码页**（中文 Windows = 936/GBK）**逐行**解码批处理，
+  文件前头的 `chcp 65001` 救不了它**之前**那段中文 —— 3 字节的 UTF-8 汉字会被 GBK 按 2 字节错配，
+  多出来的半个字节还会把紧跟的 ASCII 一起吞掉，整篇解析错位。纯 ASCII 是唯一稳的解，
+  连 `chcp` 都放前两行靠后。所有中文提示请挪到 `install.ps1`（带 BOM）或文档里。
+- **`.ps1` 必须 UTF-8 with BOM**。
+  PowerShell 5.1 对**无 BOM** 的 `.ps1` 按系统 ANSI 代码页解码，中文直接乱码（是解码错不是显示错）。
+  BOM 同时修好 PS 5.1 和 PS 7。文件开头放个自检：若 `"许杏玖".Length -ne 3`
+  就提示「本脚本没被正确解码（很可能存成了 UTF-8 无 BOM）」。
+- **`.sh` 必须 LF + 无 BOM**。
+  CRLF 会搞坏 shebang（`#!/bin/sh` 后面的 `\r` 被当成命令名一部分），BOM 会让 `#!` 不是文件首行。
+
+机器守卫（别靠手改）：`tools/normalize_scripts.py` 扫全仓强制以上规则；
+回归 **【37】** 段、`tools/preflight.sh` 第 6 步、CI `install-dryrun.yml` 的「脚本编码守卫」都会拦。
+改完跑一次 `python tools/normalize_scripts.py` 看有没有飘红。
+
 ---
 
 ## 提交 PR

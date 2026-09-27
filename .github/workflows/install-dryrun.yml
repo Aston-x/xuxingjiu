@@ -22,6 +22,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      # 先守编码：.bat 必须纯 ASCII、含中文的 .ps1 必须带 BOM、.sh 必须 LF。
+      # 这是"本地测试抓不到、但用户打开就炸"的一类问题 —— 曾经 install.bat
+      # 因为中文注释压在 chcp 之前，在中文 Windows 上散架成一片
+      # "不是内部或外部命令"，而所有测试都是绿的。
+      - name: 脚本编码守卫
+        run: python tools/normalize_scripts.py --quiet
+
       - name: install.sh --check（只读，不动文件）
         if: runner.os != 'Windows'
         run: bash install.sh --check
@@ -30,6 +37,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./install.ps1 -CheckOnly
+
+      # 上面那步走的是 .ps1。但用户双击的是 install.bat —— 而这一轮翻的车
+      # 恰恰就在 .bat 上，所以必须把"真正被双击的那个文件"也跑一遍。
+      # QQBOT_NO_PAUSE=1 让它跳过结尾的按键等待。
+      - name: install.bat（用户双击的入口，非交互跑一遍）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QQBOT_NO_PAUSE: "1"
+        run: |
+          cmd.exe /c "install.bat -CheckOnly"
+          $rc = $LASTEXITCODE
+          Write-Host "install.bat 退出码 = $rc"
+          # 只读干跑时没有 venv、跳过 npm，返回 1 是预期值，不是失败
+          if ($rc -ne 0 -and $rc -ne 1) { throw "install.bat 意外退出码：$rc" }
 
       - name: doctor 能在"还没配置"的状态下给出结论
         shell: bash

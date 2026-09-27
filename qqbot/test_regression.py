@@ -3319,10 +3319,111 @@ async def main():
     check("自检结果进了 providers 快照",
           bool(bot.console_snapshot("providers").get("selfcheck")))
 
-    # ── 尾部污染自检：【24】~【36】是在隔离撤销之后跑的，得单独复核一遍 ──
+    # ════════════════════════════════════════════════════════════════
+    print("\n【37】脚本编码与换行符（「下载下来打开就炸」那一类）")
+
+    # 这一段的由来：install.bat 整篇中文注释，而 chcp 65001 压在第 11 行 ——
+    # cmd.exe 用控制台代码页（中文 Windows = 936/GBK）**逐行解码**批处理，
+    # chcp 之前那段中文的每个字是 3 个 UTF-8 字节，被 GBK 按 2 字节两两错配，
+    # 多出来的半个字节会把紧跟其后的 ASCII 字符一起吞掉。于是整个脚本散架：
+    #   '縗挭敥縗…' 不是内部或外部命令
+    #   'nstall.ps1' 不是内部或外部命令      ← install 的 i 被啃掉了
+    # 实测还发现更阴的一条：把 chcp 提到第 2 行**也不够** ——
+    # 被别的 .bat `call` 调用时照样炸（cmd 已在旧代码页下缓冲过文件）。
+    # 所以规矩只能是最硬的那条：.bat 里一个非 ASCII 字节都不能有。
+    # 这类问题「本地跑一次测试」是抓不到的，必须由机器守着。
+    _repo37 = BASE_DIR.parent
+    _tool37 = _repo37 / "tools" / "normalize_scripts.py"
+    if not _tool37.exists():
+        # 源目录 （源目录） 没有 tools/normalize_scripts.py（那是开源副本才有的），
+        # 跳过而不是判失败 —— 否则同一套测试在源目录就没法跑了。
+        check("（不在开源仓库布局里，跳过脚本编码守卫）", True)
+    else:
+        import importlib.util as _ilu37
+        _spec37 = _ilu37.spec_from_file_location("_norm37", _tool37)
+        _norm37 = _ilu37.module_from_spec(_spec37)
+        _spec37.loader.exec_module(_norm37)
+
+        _all37 = _norm37.targets()
+        check("扫到了脚本文件（不是空目录）", len(_all37) >= 5, f"{len(_all37)} 个")
+
+        _bad37: dict[str, list[str]] = {}
+        for _p37 in _all37:
+            _codes37 = [c for c, _ in _norm37.check(_p37)]
+            if _codes37:
+                _bad37[str(_p37.relative_to(_repo37)).replace("\\", "/")] = _codes37
+        check("全部脚本文件编码/换行合规", not _bad37,
+              f"不合规（跑 `python tools/normalize_scripts.py --fix` 可自动修大部分）：{_bad37}")
+
+        # ── 逐条拆开，失败时能一眼看出是哪条规则被破坏 ──
+        # （1）批处理：零非 ASCII 字节。这是唯一可靠的做法，不能打折扣。
+        _bats37 = [p for p in _all37 if p.suffix.lower() in (".bat", ".cmd")]
+        check("仓库里确实有批处理文件在守", bool(_bats37),
+              str([str(p.relative_to(_repo37)) for p in _bats37]))
+        for _b37 in _bats37:
+            _raw37 = _b37.read_bytes()
+            _cjk37 = [i for i, b in enumerate(_raw37) if b > 0x7F]
+            _rel37 = str(_b37.relative_to(_repo37)).replace("\\", "/")
+            _line37 = _raw37[:_cjk37[0]].count(b"\n") + 1 if _cjk37 else 0
+            check(f"{_rel37} 是纯 ASCII（.bat 里绝不能出现中文）",
+                  not _cjk37,
+                  f"{len(_cjk37)} 个非 ASCII 字节，第一个在第 {_line37} 行 —— "
+                  f"中文请挪到配套的 .ps1 或英文文案里")
+
+        # （2）install.bat 是用户双击的那一个：额外钉死它的几个前提
+        _ib37 = _repo37 / "install.bat"
+        if _ib37.exists():
+            _txt37 = _ib37.read_text(encoding="ascii", errors="replace")
+            _lines37 = [x.strip() for x in _txt37.splitlines() if x.strip()]
+            check("install.bat 第一行是 @echo off", _lines37[0].lower() == "@echo off",
+                  _lines37[0])
+            check("install.bat 第二行就切到 UTF-8（让 PowerShell 的中文能显示）",
+                  _lines37[1].lower().startswith("chcp 65001"), _lines37[1])
+            check("install.bat 调的是 install.ps1",
+                  "install.ps1" in _txt37)
+            check("install.bat 支持非交互（CI 里不会卡在 pause）",
+                  "QQBOT_NO_PAUSE" in _txt37)
+
+        # （3）PowerShell：含中文就必须带 UTF-8 BOM，
+        #     否则 PS 5.1 按 ANSI/GBK 解码，中文全乱（是解码错误，不是显示问题）
+        _ps37 = [p for p in _all37 if p.suffix.lower() in (".ps1", ".psm1")]
+        for _p37b in _ps37:
+            _raw37b = _p37b.read_bytes()
+            _rel37b = str(_p37b.relative_to(_repo37)).replace("\\", "/")
+            try:
+                _raw37b.decode("ascii")
+                _has_cjk37 = False
+            except UnicodeDecodeError:
+                _has_cjk37 = True
+            if _has_cjk37:
+                check(f"{_rel37b} 含中文且带 UTF-8 BOM",
+                      _raw37b.startswith(b"\xef\xbb\xbf"),
+                      "无 BOM —— Windows PowerShell 5.1 会把中文按 GBK 解成乱码")
+
+        # （4）install.ps1 的自检探针本身要立得住：
+        #     字面量在被误解码时也是乱的，所以判据只能用**长度**
+        check("误解码探针成立：'许杏玖' 正常 3 字、按 GBK 错配成 5 字",
+              len("许杏玖") == 3
+              and len("许杏玖".encode("utf-8").decode("gbk", errors="replace")) != 3,
+              f"{len('许杏玖')} vs "
+              f"{len('许杏玖'.encode('utf-8').decode('gbk', errors='replace'))}")
+
+        # （5）shell 脚本：LF 且无 BOM（CRLF 会让 Linux 上的 shebang 失效）
+        for _s37 in [p for p in _all37 if p.suffix.lower() in (".sh", ".bash")]:
+            _raw37s = _s37.read_bytes()
+            _rel37s = str(_s37.relative_to(_repo37)).replace("\\", "/")
+            # 注意：别把 b"\r\n" 直接写进 f-string，Python 3.11 会报
+            # "f-string expression part cannot include a backslash"（3.12 才放开）
+            _crlf37 = _raw37s.count(b"\r\n")
+            _bom37s = _raw37s.startswith(b"\xef\xbb\xbf")
+            check(f"{_rel37s} 是 LF 且无 BOM",
+                  _crlf37 == 0 and not _bom37s,
+                  f"CRLF={_crlf37} BOM={_bom37s}")
+
+    # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]
-    check("【24】~【36】也没有污染真实状态文件", not changed_tail,
+    check("【24】~【37】也没有污染真实状态文件", not changed_tail,
           f"被改动的：{changed_tail}（去这几段里把可写路径补上隔离）")
     __import__("shutil").rmtree(TAIL_DIR, ignore_errors=True)
 
