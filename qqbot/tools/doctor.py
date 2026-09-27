@@ -24,6 +24,17 @@ import pathlib
 import socket
 import sys
 
+# --json 那份是要给 CI 读的：json.dumps(..., ensure_ascii=False) 会写出中文，
+# 而 Windows 上 stdout 被重定向到文件时用的是本地代码页（中文机是 GBK，
+# 英文机是 cp1252 —— 后者连中文都编不出来）。不重设这里，`--json > x.json`
+# 出来的就不是 UTF-8，下游按 UTF-8 读要么抛异常要么乱码。
+# 三段式和 qqbot/bot.py 里那份一致。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
 BASE = pathlib.Path(__file__).resolve().parents[1]          # qqbot/
 ROOT = BASE.parent                                          # 仓库根
 CONFIG = BASE / "config.json"

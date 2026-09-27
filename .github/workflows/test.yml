@@ -26,14 +26,24 @@ jobs:
 
       - name: 装依赖
         working-directory: qqbot
+        shell: bash
         run: |
           python -m venv .venv
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          # 依赖必须装进 .venv。装在系统解释器上的话，下面几条测试跑的是
+          # .venv/bin/python，而那个 venv 是空的 —— 会在 import httpx 就崩，
+          # 看着像测试挂了，其实是装错了地方。
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -r requirements.txt
 
       - name: 依赖自检（pip check）
         working-directory: qqbot
-        run: python -m pip check
+        shell: bash
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" -m pip check
 
       - name: 回归测试（含 Provider / 生图 / 跨平台段）
         working-directory: qqbot
