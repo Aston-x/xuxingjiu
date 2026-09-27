@@ -401,9 +401,9 @@ feeds3 HTML 中的评论嵌在 `<li class="comments-item">` 内，支持多级�
 二级回复嵌套在一级评论的 `mod-comments-sub` 容器中：
 
 ```html
-<li class="comments-item bor3" data-type="replyroot" data-tid="1" data-uin="1100000022" data-nick="用户庚" data-who="1">
+<li class="comments-item bor3" data-type="replyroot" data-tid="1" data-uin="1100000022" data-nick="用户己" data-who="1">
   <div class="comments-content">
-    <a class="nickname c_tx q_namecard" link="nameCard_1100000022">用户庚</a>
+    <a class="nickname c_tx q_namecard" link="nameCard_1100000022">用户己</a>
     &nbsp;回复&nbsp;
     <a class="nickname c_tx q_namecard" link="nameCard_1100000011">用户庚</a>
     &nbsp;:&nbsp;回复内容

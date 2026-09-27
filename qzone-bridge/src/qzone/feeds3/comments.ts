@@ -669,9 +669,9 @@ export function parseFeeds3CommentsScoped(processedText: string): Map<string, Re
  *
  * 二级回复（replyroot）嵌套在一级评论的 `mod-comments-sub` 中：
  * ```html
- * <li class="comments-item bor3" data-type="replyroot" data-tid="1" data-uin="1100000022" data-nick="用户庚">
+ * <li class="comments-item bor3" data-type="replyroot" data-tid="1" data-uin="1100000022" data-nick="用户己">
  *   <div class="comments-content">
- *     <a class="nickname c_tx">用户庚</a>&nbsp;回复&nbsp;<a class="nickname c_tx">用户庚</a>&nbsp;:&nbsp;回复内容
+ *     <a class="nickname c_tx">用户己</a>&nbsp;回复&nbsp;<a class="nickname c_tx">用户庚</a>&nbsp;:&nbsp;回复内容
  *   </div>
  *   <div class="comments-op">
  *     <a class="reply" data-param="t1_tid=xxx&t2_uin=1100000011&t2_tid=1">回复</a>

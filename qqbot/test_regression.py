@@ -3335,8 +3335,8 @@ async def main():
     _repo37 = BASE_DIR.parent
     _tool37 = _repo37 / "tools" / "normalize_scripts.py"
     if not _tool37.exists():
-        # 源目录 （源目录） 没有 tools/normalize_scripts.py（那是开源副本才有的），
-        # 跳过而不是判失败 —— 否则同一套测试在源目录就没法跑了。
+        # 源目录（不在开源仓库布局里，没有 tools/normalize_scripts.py）跳过而不是判失败
+        # —— 否则同一套测试在源目录就没法跑了。
         check("（不在开源仓库布局里，跳过脚本编码守卫）", True)
     else:
         import importlib.util as _ilu37

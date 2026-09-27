@@ -189,7 +189,7 @@ const cases: TestCase[] = [
         tid: 4,
         uin: 1100000023,
         name: '用户辛',
-        content: '看到小母鸡了',
+        content: '看到小鹅了',
         create_time: 1770378235,
         createTime: '2026年02月06日',
         createTime2: '2026-02-06 19:43:55',
@@ -217,7 +217,7 @@ const cases: TestCase[] = [
       assert(comment.commentid === '4', `commentid 应为 "4"`);
       assert(comment.uin === '1100000023', `uin 不正确`);
       assert(comment.name === '用户辛', `name 不正确`);
-      assert(comment.content === '看到小母鸡了', `content 不正确`);
+      assert(comment.content === '看到小鹅了', `content 不正确`);
       assert(comment.createtime === 1770378235, `createtime 不正确`);
       assert(comment.createTime === '2026年02月06日', `createTime 不正确`);
       assert(comment.createTime2 === '2026-02-06 19:43:55', `createTime2 不正确`);
