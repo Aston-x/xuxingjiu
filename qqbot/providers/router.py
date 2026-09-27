@@ -28,6 +28,25 @@ SOURCE_NO_KEY = "no-key"
 SOURCE_FAILED = "failed"
 
 
+def _safe_url(url: str) -> str:
+    """把 URL 里的密钥抹掉再上屏。
+
+    有些厂商（尤其 Gemini 的老写法）把 key 放在 `?key=` 里，而端点面板/日志会把
+    base_url 原样显示 —— 不处理就等于**在控制台上明文展示密钥**。
+    这里只保留查询参数的名字，值一律替成 `***`。
+    """
+    if not url or "?" not in url:
+        return url
+    head, _, query = url.partition("?")
+    safe = []
+    for piece in query.split("&"):
+        if not piece:
+            continue
+        name, sep, _value = piece.partition("=")
+        safe.append(f"{name}{sep}***" if sep else name)
+    return head + "?" + "&".join(safe)
+
+
 class ConcurrencyGate:
     """按端点限流。泛化自原来那个只盯着 local 的 `Chat.local_sem`。
 
@@ -380,6 +399,7 @@ class Router:
                               else ("plain" if ep.api_key else ""),
                 "loopback": ep.is_loopback,
                 "concurrency": int(ep.concurrency or 0),
+                "base_url": _safe_url(ep.base_url),
                 "vision": bool(cap.vision and cap.vision_input != "none"),
                 "capabilities": {
                     "streaming": cap.streaming,

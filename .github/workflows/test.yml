@@ -1,0 +1,75 @@
+name: 测试
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 三平台矩阵：这个项目是「先为 Windows 写的」，跨平台最容易出问题的就是路径、
+  # 进程探测、文件锁这几块 —— 只在 Ubuntu 上跑是发现不了的。
+  python:
+    name: qqbot (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 装依赖
+        working-directory: qqbot
+        run: |
+          python -m venv .venv
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 回归测试（含 Provider / 生图 / 跨平台段）
+        working-directory: qqbot
+        shell: bash
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" test_regression.py
+
+      - name: 模型层单测（离线）
+        working-directory: qqbot
+        shell: bash
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" test_providers.py
+
+      - name: 生图层单测（离线）
+        working-directory: qqbot
+        shell: bash
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          "$PY" test_imagegen.py
+
+  bridge:
+    name: qzone-bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: qzone-bridge/package-lock.json
+      - name: 装依赖
+        working-directory: qzone-bridge
+        run: npm ci --no-audit --no-fund
+      - name: 类型检查
+        working-directory: qzone-bridge
+        run: npm run typecheck
+      - name: 单元测试
+        working-directory: qzone-bridge
+        run: npm run test:unit

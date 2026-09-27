@@ -31,6 +31,20 @@ from websockets.exceptions import ConnectionClosed
 # 模型接入层：本地 / 云端 / 任意第三方都走它（见 qqbot/providers/README.md）
 from providers import ConcurrencyGate, Endpoint, Provider, build_router
 
+# 生图层：把「图弄回来」从 SD 类里抽出来（本地 4 家 + 云端 5 家，见 qqbot/imagegen/README.md）
+from imagegen import (
+    GenOutcome,
+    GenRequest,
+    build_image_router,
+)
+from imagegen.types import (
+    REASON_DISABLED,
+    REASON_EMPTY,
+    REASON_FAILED,
+    REASON_QUOTA,
+    REASON_TIMEOUT,
+)
+
 BASE = Path(__file__).resolve().parent
 CONFIG_PATH = BASE / "config.json"
 
@@ -240,25 +254,14 @@ def acquire_lock() -> None:
     退出码 2 = 已有实例在跑（守护脚本据此区分「不该重启」与「崩溃需拉起」）。
     """
     global _lock_fh
-    try:
-        import msvcrt
-    except ImportError:
-        logger.warning("非 Windows 环境，跳过多实例锁")
-        return
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(LOCK_PATH, "a+", encoding="utf-8")
-    try:
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError as exc:
-        fh.close()
-        logger.error("已有实例在运行（%s 被占用：%s）", LOCK_PATH, exc)
-        logger.error("要重启请用 restart.bat；确认没有别的窗口在跑后再手动清掉该文件。")
+    import filelock  # noqa: PLC0415  同目录模块
+    # 跨平台：Windows 走 msvcrt，POSIX 走 flock（以前非 Windows 是**静默跳过**的，
+    # 等于没有保护，两个 bot 一起写 memory.json 会把数据写坏）
+    fh, holder = filelock.acquire(LOCK_PATH)
+    if fh is None:
+        logger.error("已有实例在运行（%s 被 PID %s 占用）", LOCK_PATH, holder or "?")
+        logger.error("先停掉那个实例（双击 停止.pyw），确认没有别的窗口在跑再启动。")
         sys.exit(2)
-    fh.seek(0)
-    fh.write(f"{os.getpid()}\n")
-    fh.truncate()
-    fh.flush()
     _lock_fh = fh
     atexit.register(release_lock)
 
@@ -270,14 +273,9 @@ def release_lock() -> None:
     if fh is None:
         return
     try:
-        import msvcrt
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-    except Exception:
-        pass
-    try:
-        fh.close()
-    except Exception:
+        import filelock  # noqa: PLC0415
+        filelock.release(fh)
+    except Exception:  # noqa: BLE001
         pass
     try:
         LOCK_PATH.unlink()
@@ -443,6 +441,11 @@ def _usage_sink(usage: dict) -> None:
 
 
 ROUTER = build_router(CFG, base_dir=BASE, on_usage=_usage_sink, logger_=logger)
+
+# 生图路由：端点/回退链/云端每日上限/负缓存 都在它里面。
+# 旧 sd.* 会被自动迁移成一个本地端点（provider=sd_webui），所以老配置不改也能画。
+IMAGE_ROUTER = build_image_router(CFG, base_dir=BASE, logger_=logger,
+                                  state_path=BASE / "state" / "imagegen_state.json")
 
 
 class Chat:
@@ -2487,7 +2490,10 @@ class SD:
 
     def __init__(self) -> None:
         cfg = CFG.get("sd", {})
-        self.enable = bool(cfg.get("enable", False))
+        ig_cfg = CFG.get("imagegen", {}) or {}
+        # 两道闸：sd.enable（旧键，兼容）+ imagegen.enable（新总闸）。
+        # 任一个关着就不画 —— 老用户只认 sd.enable，新用户可以用 imagegen.enable 一刀切。
+        self.enable = bool(cfg.get("enable", False)) and bool(ig_cfg.get("enable", True))
         self.base_url = str(cfg.get("base_url", "http://127.0.0.1:7860")).rstrip("/")
         self.dir = BASE / str(cfg.get("dir", "generated"))
         self.timeout = float(cfg.get("timeout_seconds", 180))
@@ -2654,6 +2660,8 @@ class SD:
             "steps": self.body_extra.get("steps"),
             "cfg_scale": self.body_extra.get("cfg_scale"),
             "negative_count": len([x for x in self.negative.split(",") if x.strip()]),
+            # 生图层（新增）：面板要能看出「现在走的是哪个后端、它可不可用、云端花了多少」
+            "backend": IMAGE_ROUTER.status(),
         }
 
     def last_image(self) -> str | None:
@@ -2760,83 +2768,123 @@ class SD:
         wh = self.sizes.get(mode) or [1024, 1024]
         return _join(parts), _join(neg), int(wh[0]), int(wh[1])
 
-    async def _txt2img(self, body: dict) -> bytes | None:
-        """发一次 txt2img，返回图片字节。异常原样抛给调用方决定要不要重试。"""
-        r = await CHAT.client_for(self.base_url).post(
-            self.base_url + "/sdapi/v1/txt2img", json=body, timeout=self.timeout)
-        r.raise_for_status()
-        b64 = (r.json().get("images") or [""])[0]
-        if not b64:
-            return None
-        return base64.b64decode(b64.split(",", 1)[-1])
+    # ── 出图（HTTP 交互全部交给 imagegen，这里只剩编排、配额与落盘） ──
 
-    async def generate(self, intent: str, life: dict | None = None,
-                       purpose: str = "group") -> str | None:
-        """出图。三档额度：private 私聊不限、group 群聊每 24h 10 张、qzone 说说每天 1 张。"""
+    def reload(self, cfg: dict | None = None) -> list[str]:
+        """从配置重读「跟后端绑」的那部分（开关 / 地址 / 超时）。
+
+        ⚠️ 刻意**不重读角色字段**（char_tags / sizes / *_prefix）——
+        它们决定"这张画成什么样"，出图途中被换掉会让同一轮的尺寸变来变去，很难查。
+        角色字段只在进程启动时读一次；换人设请重启。
+
+        为什么必须有这个方法：`self.enable` 是 `__init__` 里一次性读的，
+        前端把「生图总闸」拨到 false 若不重读，开关**看着生效实际不生效**，且毫无报错。
+        """
+        c = cfg if cfg is not None else CFG
+        sd_cfg = c.get("sd", {}) or {}
+        ig_cfg = c.get("imagegen", {}) or {}
+        new_enable = bool(sd_cfg.get("enable", False)) and bool(ig_cfg.get("enable", True))
+        new_url = str(sd_cfg.get("base_url", "http://127.0.0.1:7860")).rstrip("/")
+        new_timeout = float(sd_cfg.get("timeout_seconds", 180))
+        changed = (new_enable != self.enable or new_url != self.base_url
+                   or new_timeout != self.timeout)
+        self.enable, self.base_url, self.timeout = new_enable, new_url, new_timeout
+        if changed:
+            logger.info("生图配置已重载：enable=%s base_url=%s timeout=%.0fs",
+                        self.enable, self.base_url, self.timeout)
+        return []
+
+    def check_ready(self, purpose: str = "group", *, has_intent: bool = True,
+                    low_spec: bool = False) -> tuple[bool, str, str]:
+        """现在能不能画 —— **纯本机判断，不发任何请求**。
+
+        返回 (ok, reason, why)。reason 见 imagegen/types.py 的字面量：
+        `disabled`/`quota`/`empty-intent` 属正常态（上层静默），
+        `no-endpoint`/`backend-down` 属故障态（上层给用户一句话 + 通知管理员）。
+        """
+        if not self.enable:
+            return False, REASON_DISABLED, "生图总闸（sd.enable）关着"
+        if not has_intent:
+            return False, REASON_EMPTY, "没给要画什么"
+        if not self.can_draw(purpose):
+            why = f"{self._label(purpose)}额度已满（{self._quota_text(purpose)}）"
+            return False, REASON_QUOTA, why
+        return IMAGE_ROUTER.check_ready(purpose, low_spec=low_spec,
+                                        enabled=True, has_intent=True)
+
+    async def generate_outcome(self, intent: str, life: dict | None = None,
+                               purpose: str = "group") -> GenOutcome:
+        """出图并返回**结构化结果**（含失败原因，供提示与管理员通知用）。"""
         if not self.enable or not (intent or "").strip():
-            return None
-        # ⚠️ 出图要走**锁 + 先占位**，不能"画完再计数"：
-        # 出一张图要几十秒（还要重试一次），额度却在画完之后才 +1，
-        # 于是这段窗口里进来的第二个请求看到的仍是"还没用过"，跟着一起画 ——
-        # 说说额度明明是 1 张，却画出 2 张（面板上就成了 2/1），多那张根本没发。
-        # 所以：拿锁保证同一时刻只画一张；拿到锁后**先占住额度**，画失败再退还。
+            if not self.enable:
+                return GenOutcome(ok=False, reason=REASON_DISABLED, detail="生图总闸关着")
+            return GenOutcome(ok=False, reason=REASON_EMPTY, detail="没给要画什么")
+        # ⚠️ 出图要走**锁 + 先占位**：出一张要几十秒，画完才计数会让并发请求一起挤进来。
         async with self._draw_lock:
             if not self.can_draw(purpose):
                 logger.info("%s出图额度已满（%s），这次不画",
                             self._label(purpose), self._quota_text(purpose))
-                return None
+                return GenOutcome(ok=False, reason=REASON_QUOTA,
+                                  detail=f"{self._label(purpose)}额度已满"
+                                         f"（{self._quota_text(purpose)}）")
             self.mark_drawn(purpose)          # 先占住，别让并发的请求挤进来
+            ok = False
             try:
-                return await self._generate_locked(intent, life, purpose)
-            except Exception:
-                self.unmark_drawn(purpose)    # 出岔子就把额度还回去，别白扣
-                raise
+                outcome = await self._draw_locked(intent, life, purpose)
+                ok = outcome.ok
+                return outcome
+            finally:
+                # ★ 退额度**只有这一处**出口。老代码在 _draw_locked 与 generate 各退一次，
+                #   任何在中间抛异常的改动都会多退一张（sd_state.json 凭空少一张）。
+                if not ok:
+                    self.unmark_drawn(purpose)
 
-    async def _generate_locked(self, intent: str, life: dict | None = None,
-                               purpose: str = "group") -> str | None:
+    async def generate(self, intent: str, life: dict | None = None,
+                       purpose: str = "group") -> str | None:
+        """兼容入口：返回图片路径或 None（老调用方与测试桩还在用这个名字）。"""
+        out = await self.generate_outcome(intent, life, purpose)
+        return out.path or None
+
+    async def _draw_locked(self, intent: str, life: dict | None = None,
+                           purpose: str = "group") -> GenOutcome:
         """真正的出图流程（调用方已持锁并占好额度）。"""
         pick = await self.compose(intent, life)
         pos, neg, w, h = self.assemble(pick)
         self.dir.mkdir(parents=True, exist_ok=True)
-        body = {"prompt": pos, "negative_prompt": neg,
-                **self.body_extra, "width": w, "height": h}
-        if self.hires:
-            # 二次放大（hires fix）对手部与小细节的改善最明显，
-            # 用 R-ESRGAN Anime6B + 低重绘强度：只修细节，不改变构图
-            body.update({
-                "enable_hr": True,
-                "hr_scale": self.hires_scale,
-                "hr_upscaler": self.hires_upscaler,
-                "denoising_strength": self.hires_denoise,
-                "hr_second_pass_steps": max(8, int(self.body_extra["steps"] * 0.5)),
-            })
-        # SD 在重载模型、切模型、或者忙的时候会短暂返回 404/超时 ——
-        # 实测出过：第一张成功、后两张直接 404（WebUI 刚好在重载）。
-        # 隔几秒重试一次，否则她"画不出来"的次数会比真实情况多很多。
-        raw = None
+        req = GenRequest(prompt=pos, negative=neg, width=w, height=h,
+                         params=dict(self.body_extra), purpose=purpose,
+                         intent=intent, mode=str(pick.get("mode") or "solo"))
+        # SD 在重载模型 / 切模型 / 忙的时候会短暂 404 或超时 ——
+        # 实测出过：第一张成功、后两张直接 404（WebUI 刚好在重载）。隔几秒重试一次。
+        out = GenOutcome(ok=False, reason=REASON_FAILED, detail="没有可用生图端点")
         for attempt in (1, 2):
-            try:
-                raw = await self._txt2img(body)
+            out = await IMAGE_ROUTER.generate(req, chain="image")
+            if out.ok:
                 break
-            except Exception as exc:
-                if attempt == 1:
-                    logger.warning("SD 出图失败（%s），5 秒后重试一次", exc)
-                    await asyncio.sleep(5)
-                else:
-                    logger.warning("SD 出图再次失败，这次放弃：%s", exc)
-        if not raw:
-            # 没画出来 —— 额度是调用方预先占的，得退还
-            self.unmark_drawn(purpose)
-            return None
+            if out.benign:
+                break                      # 正常态（额度/关着）不必重试
+            if attempt == 1:
+                logger.warning("出图失败（%s：%s），5 秒后重试一次", out.reason, out.detail)
+                await asyncio.sleep(5)
+            else:
+                logger.warning("出图再次失败，这次放弃：%s / %s", out.reason, out.detail)
+        if not out.ok:
+            return out
         path = self.dir / f"{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
-        path.write_bytes(raw)
-        mode = pick.get("mode") or "solo"
+        try:
+            path.write_bytes(out.data)
+        except OSError as exc:
+            return GenOutcome(ok=False, reason=REASON_FAILED,
+                              detail=f"图片写盘失败（{exc}）", endpoint_id=out.endpoint_id)
+        mode = str(pick.get("mode") or "solo")
         MODE_CN = {"solo": "只有她", "duo": "她+朋友", "scenery": "纯景物"}
         ACTIVITY.note("画图", f"画了「{intent[:36]}」（{MODE_CN.get(mode, mode)}·{self._label(purpose)}）")
-        logger.info("出图成功（%s｜%s %dx%d%s）%s：%s",
+        logger.info("出图成功（%s｜%s %dx%d）来自后端 %s：%s",
                     MODE_CN.get(mode, mode), self._label(purpose), w, h,
-                    " +hires" if self.hires else "", path.name, pos[:110])
-        return str(path)
+                    out.endpoint_id or "?", path.name)
+        out.path = str(path)
+        out.detail = str(path)
+        return out
 
 
 SDGEN = SD()
@@ -5992,6 +6040,41 @@ def pre_draw_line() -> str:
     return random.choice(lines) if lines else ""
 
 
+def fail_line() -> str:
+    """出图失败时她补的一句。
+
+    为什么需要：`pre_draw_line` 先应了"稍等，画个给你"，结果画失败只写进日志 ——
+    用户从此干等，且完全不知道发生了什么（管理员也不知道）。
+    这里给一句人设口吻的收尾，让"说了要画却没画"这件事至少有交代。
+    """
+    cfg = CFG.get("sd", {})
+    if not cfg.get("fail_enable", True):
+        return ""
+    lines = [str(x).strip() for x in (cfg.get("fail_lines") or []) if str(x).strip()]
+    return random.choice(lines) if lines else ""
+
+
+_draw_fail_notice_at: float = 0.0
+
+
+async def notify_draw_failure(reason: str, detail: str, endpoint: str = "") -> None:
+    """出图失败时通知管理员 —— **带节流**。
+
+    自发说说那条链路可能每隔几分钟就试一次，不节流会把管理员私聊刷爆，
+    结果就是"通知太吵 → 用户把通知关了 → 真出事也没人看"。
+    """
+    global _draw_fail_notice_at
+    now = time.time()
+    if now - _draw_fail_notice_at < 3600:
+        logger.info("出图失败通知被节流（1 小时一条）：%s / %s", reason, detail)
+        return
+    _draw_fail_notice_at = now
+    about = f"（后端 {endpoint}）" if endpoint else ""
+    await notify_admins(f"出图失败{about}：{reason} —— {detail}\n"
+                        f"检查一下生图后端（本地服务开没开 / 密钥有没有 / 额度是否用完）。"
+                        f"\n控制台「识图」面板下方能看到每个生图端点的状态。")
+
+
 def _action_note(notes: list[str], context: list[str]) -> str:
     """把「她刚做了什么」合成一条提示，让她用自己的话说一句。"""
     blocks = []
@@ -6833,18 +6916,42 @@ async def handle_qzone_reply(reply: str, life: dict | None = None,
         return drop_tags(text, QZONE_READ_TAG), None
 
     intent = draw.group(1).strip()
+    quota_purpose = "qzone" if caption else purpose
 
-    # 生图要十几秒，先应一声，免得对方以为她没听见又问一遍
+    # ① 先确认"现在能不能画"—— **零请求**的本地判断（额度 / 端点 / 负缓存）。
+    #    这一步挪到过渡语之前，是为了别出现"说了稍等，结果根本画不了"。
+    ready, reason, why = SDGEN.check_ready(quota_purpose, has_intent=bool(intent))
+    if not ready:
+        if reason not in ("disabled", "quota", "empty-intent"):
+            # 故障态（没端点 / 后端刚挂过）：立刻给话 + 通知，别让她干等十几秒
+            if say:
+                fl = fail_line()
+                if fl:
+                    await say(fl)
+            await notify_draw_failure(reason, why)
+            logger.warning("出图前置检查未通过（%s）：%s", reason, why)
+        else:
+            logger.info("这次不画（%s：%s）", reason, why)
+        return text, None
+
+    # ② 确认能画了，才发过渡语（生图要十几秒，中间没动静对方会以为她没听见）
     if say:
         line = pre_draw_line()
         if line:
             await say(line)
 
-    # 配了说说就是发空间（走说说额度），单独画图发到当前会话（私聊不限 / 群聊 24h 10 张）
-    img = await SDGEN.generate(intent, life, "qzone" if caption else purpose)
-    if not img:
-        logger.warning("出图失败，这次就不发图了")
+    # ③ 真去画。失败时也必须给用户一句 + 通知管理员（两道兜底）
+    outcome = await SDGEN.generate_outcome(intent, life, quota_purpose)
+    if not outcome.ok:
+        if say and not outcome.benign:
+            fl = fail_line()
+            if fl:
+                await say(fl)
+        if not outcome.benign:
+            await notify_draw_failure(outcome.reason, outcome.detail, outcome.endpoint_id)
+        logger.warning("出图失败（%s），这次就不发图了：%s", outcome.reason, outcome.detail)
         return text, None
+    img = outcome.path
 
     if caption:
         await post_qzone(caption.group(1).strip(), manual=True, images=[img])
@@ -6910,11 +7017,20 @@ async def qzone_auto_post_maybe() -> None:
 
     # 自发说说**必须带图**：优先现画一张（走说说额度），画不出来就复用以前生成过的，
     # 实在什么都没有就不发了 —— 反正不能空着，也不能把提示词当正文发出去
+    #
+    # 注意：自发链路**不给用户发 fail_line**（这是她在发自己的说说，没人在提问），
+    # "用户提示"这一档退化为既有的"复用旧图"；但管理员仍会收到通知（带 1 小时节流）。
     images: list[str] = []
     if SDGEN.enable:
         img = None
-        if SDGEN.can_draw("qzone"):
-            img = await SDGEN.generate(content, life, "qzone")
+        ready, reason, why = SDGEN.check_ready("qzone", has_intent=bool(content))
+        if ready:
+            outcome = await SDGEN.generate_outcome(content, life, "qzone")
+            img = outcome.path or None
+            if not outcome.ok and not outcome.benign:
+                await notify_draw_failure(outcome.reason, outcome.detail, outcome.endpoint_id)
+        elif reason not in ("disabled", "quota", "empty-intent"):
+            logger.warning("自发说说没配图（%s）：%s", reason, why)
         if not img:
             img = SDGEN.last_image()
             if img:
@@ -8033,6 +8149,16 @@ CONSOLE_SWITCHES: dict[str, tuple[str, str, str]] = {
     "activity.llm_summary": ("报告用模型润色", "小结交给模型写成一段话，而不是流水账", "activity"),
     "nudge_on_ask": ("没做就催一次", "他要她做事、她光嘴上答应时再要一次标记", "reply"),
     "vision_enable": ("识图总闸", "关掉就完全不解析图片（连说明都不下发）", "vision"),
+    # ── 生图（本机依赖：要 SD WebUI / ComfyUI / 云端 key 才能用） ──
+    "sd.enable": ("生图", "关掉就完全不画图。本地后端需要 SD WebUI 开着，"
+                        "云端后端需要配好密钥；用之前建议先跑 tools/doctor.py 体检", "sd"),
+    "imagegen.enable": ("生图总闸（含云端）", "一刀切：不光是本地，连云端生图也一起关", "sd"),
+    "sd.fail_enable": ("画不出来时说一句", "画失败时用 sd.fail_lines 里的话补一句，"
+                                        "免得她说了要画却什么都没发生", "sd"),
+    # ── 本地模型（没装本地模型的人应当能一眼关掉，而不是对着报错猜） ──
+    "local.enable": ("本地模型", "优先用 LM Studio / Ollama 这类本机模型。"
+                                "没装本地模型就关掉，只走云端", "local"),
+    "local.vision": ("本地识图", "用本机的视觉模型看图（需要 VL 模型，很吃显存）", "local"),
     "ban.enable": ("禁言功能", "她可以在群里禁言（含连戳自动处置）", "ban"),
     "ban.protect_admins": ("禁言保护管理员", "禁言前先查对方是不是管理员/群主，是就放弃", "ban"),
     "quote.enable": ("引用回复", "多人同时在聊时带上引用，免得看不清在回谁", "quote"),
@@ -8052,6 +8178,8 @@ CONSOLE_LISTS: dict[str, tuple[str, str, str, int, int]] = {
     "reply_fallback_lines": ("模型挂了的兜底话", "模型全都调不通时她说的话（总得说人话）", "reply", 20, 40),
     "wake_prefix": ("唤醒前缀", "群里以这些符号开头的消息她会当成在叫她", "reply", 5, 8),
     "sd.pre_reply_lines": ("出图前的过渡语", "生图要十几秒，先说一句让她显得没走神（只是话术，不是出图参数）", "reply", 10, 40),
+    "sd.fail_lines": ("出图失败时的话", "画不出来时她补一句（人设口吻），说完就不发图了；"
+                                      "关掉 sd.fail_enable 则什么都不说", "reply", 10, 40),
     "life.mood_events": ("日常小事素材", "每天随机挑一条塞进提示词的小事（她今天遇到了什么）", "life", 30, 60),
     "self_activity.places": ("常去的地方", "她自主活动时会挑去处的候选池", "life", 40, 30),
     "web.sites": ("常用站点", "联网搜索优先逛的站点池（留空则全网搜）", "web", 12, 40),
@@ -8196,6 +8324,11 @@ def _sync_tunable(path: str, val) -> None:
         WEATHER.alert_cooldown = float(val) * 60  # 配置是分钟，实例属性是秒
     elif path == "life.events_per_day":
         LIFE.events_per_day = val
+    elif path in ("sd.enable", "imagegen.enable", "local.enable", "local.vision"):
+        # 生图/本地模型的开关是"两个键合成一个实例属性"或"下次调用才读"的写法，
+        # 光 setattr 会让开关**看着变了实际没变**（sd.enable 尤其隐蔽：毫无报错）。
+        SDGEN.reload()
+        ROUTER.reload(CFG)
 
 
 def _config_set(p: dict) -> dict:
@@ -8375,6 +8508,9 @@ def update_config(patch: dict) -> dict:
     # ★ 注册中心必须跟着重建：端点对象 / api_key / 并发闸都是按配置算出来的，
     #   不重载的话会出现「改了 api_key 不生效、删了的端点还在打旧地址」这种鬼现象。
     ROUTER.reload(CFG)
+    # 生图同理：端点/链/云端上限/负缓存一起刷新（但不重读角色字段，见 SD.reload）
+    IMAGE_ROUTER.reload(CFG)
+    SDGEN.reload(CFG)
     return fresh
 
 
@@ -8518,6 +8654,30 @@ def console_apply(op: str, payload: dict | None = None) -> dict:
                 "label": VISION_LABELS.get(backend, backend),
                 "usable": VISION.usable(),
                 "note": f"识图后端：{VISION_LABELS.get(old, old)} → {VISION_LABELS.get(backend, backend)}"}
+
+    if op == "provider_reload":
+        # 无参数 = 无攻击面。真正的配置改动仍然只能走 config_set / switch_set /
+        # list_set / vision_set，这里只负责"把磁盘上的配置重新读进来"。
+        if p:
+            raise ValueError("provider_reload 不接受参数")
+        before, before_img = ({e.id for e in ROUTER.endpoints},
+                              {e.id for e in IMAGE_ROUTER.endpoints})
+        notices = ROUTER.reload(CFG)
+        IMAGE_ROUTER.reload(CFG)
+        # 用户点这个按钮多半是"我后端刚重启了" —— 顺手清掉负缓存，
+        # 否则刚活过来的后端还会被退避期挡着，画不出来。
+        IMAGE_ROUTER.clear_negative_cache()
+        SDGEN.reload(CFG)
+        after, after_img = ({e.id for e in ROUTER.endpoints},
+                            {e.id for e in IMAGE_ROUTER.endpoints})
+        logger.info("控制台：重载端点（对话 %d→%d，生图 %d→%d）",
+                    len(before), len(after), len(before_img), len(after_img))
+        return {"ok": True,
+                "chat_endpoints": len(after), "image_endpoints": len(after_img),
+                "chat_added": sorted(after - before), "chat_removed": sorted(before - after),
+                "image_added": sorted(after_img - before_img),
+                "image_removed": sorted(before_img - after_img),
+                "notices": notices}
 
     if op == "sticker_add":
         return _sticker_add(p)
@@ -8943,6 +9103,12 @@ def console_snapshot(kind: str, arg=None) -> dict:
             "max_context_turns": CFG.get("max_context_turns"),
             "context_max_chars": (CFG.get("context") or {}).get("max_chars"),
         }
+    if kind == "providers":
+        # ★ 只读、同步、**不联网**：两个 status() 都只读内存与缓存。
+        #   绝不能在这里调 probe_all()（它是 async 且联网，会把这个 3 秒超时的
+        #   快照调用卡成 503）。
+        return {"ok": True, "chat": ROUTER.status(CFG), "image": IMAGE_ROUTER.status(),
+                "selfcheck": list(GLOBAL_SELFCHECK)}
     if kind == "config":
         redacted, masked = _redact_config(CFG)
         return {"ok": True, "config": redacted, "redacted_paths": masked}
@@ -9042,12 +9208,136 @@ def _start_console() -> None:
         logger.exception("控制台启动失败（bot 本体不受影响）：%s", exc)
 
 
+def _port_open(host: str, port: int, timeout: float = 0.6) -> bool:
+    """TCP 探活。用 socket 而不是 OS 命令 —— 三平台行为一致，也没有额外依赖。"""
+    import socket
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+# 启动自检结果（内存缓存），控制台的「模型端点」面板会读它
+GLOBAL_SELFCHECK: list[dict] = []
+
+
+def _parse_hostport(url: str, default_host: str, default_port: int) -> tuple[str, int]:
+    """从 `http://host:port/path` 里抠出 host 与 port，抠不出来就用默认值。"""
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(url if "://" in url else "http://" + url)
+        return (u.hostname or default_host), int(u.port or default_port)
+    except Exception:  # noqa: BLE001
+        return default_host, default_port
+
+
+def _startup_selfcheck() -> list[dict]:
+    """启动时逐项体检，把结论写进日志**并留在内存里**给控制台看。
+
+    为什么要做这件事：这个项目有一堆"本机依赖"（本地模型、生图后端、空间桥、接入端）。
+    配置不够的人不会看日志，只会觉得"机器人是个哑巴"。所以启动时就把
+    「哪个功能因为什么不可用」摊开说，而不是等他去猜。
+
+    每项：{key, label, level, detail, hint}，level ∈ ok / warn / error / off
+    """
+    out: list[dict] = []
+    # 自己读，别依赖调用方的局部变量（这函数也会被控制台与测试直接调用）
+    host = str(CFG.get("ws_host", "127.0.0.1"))
+
+    def add(key: str, label: str, level: str, detail: str, hint: str = "") -> None:
+        out.append({"key": key, "label": label, "level": level,
+                    "detail": detail, "hint": hint})
+
+    # ① 模型端点：至少要有一个能答话的，否则她根本不会说话
+    chat_eps = ROUTER.endpoints
+    usable = [e.id for e in chat_eps if ROUTER.usable(e)]
+    if not chat_eps:
+        add("chat", "对话模型", "error", "一个端点都没配",
+            "在 config.json 的 providers.endpoints 里配一个，或填顶层 local/cloud 段")
+    elif not usable:
+        why = "、".join(f"{e.id}({ROUTER.skip_reason(e)})" for e in chat_eps)
+        add("chat", "对话模型", "error", f"没有可用端点：{why}",
+            "云端要配密钥（api_key_env + 环境变量）；本地要先把模型服务开起来")
+    else:
+        add("chat", "对话模型", "ok", "可用：" + "、".join(usable))
+
+    # ② 识图
+    pol = ROUTER.policy(CFG)
+    if not CFG.get("vision_enable", True):
+        add("vision", "识图", "off", "总闸关着（vision_enable=false）")
+    elif not pol.usable:
+        add("vision", "识图", "warn", f"后端={pol.backend}，但当前没有能看图的端点",
+            "开了看图能力但没配支持视觉的模型；这样她遇到图片只会说看不到")
+    else:
+        add("vision", "识图", "ok",
+            f"后端={pol.backend}，首个答话端点={pol.first_answerer_id or '—'}")
+
+    # ③ 生图
+    img_ready, img_reason, img_why = SDGEN.check_ready("private")
+    if not SDGEN.enable:
+        add("imagegen", "生图", "off", "关着（sd.enable 或 imagegen.enable=false）")
+    elif img_ready:
+        add("imagegen", "生图", "ok",
+            "可用：" + "、".join(e.id for e in IMAGE_ROUTER.endpoints if IMAGE_ROUTER.usable(e)))
+    else:
+        add("imagegen", "生图", "warn" if img_reason in ("quota", "empty-intent") else "error",
+            f"不可用（{img_reason}）：{img_why}",
+            "本地后端要先开 SD WebUI / ComfyUI；云端后端要配密钥")
+
+    # ④ 空间桥 / 接入端：端口探活（纯 socket，跨平台）
+    bridge_host, bridge_port = _parse_hostport(
+        str((CFG.get("console") or {}).get("qzone_bridge_url") or "http://127.0.0.1:5700"),
+        "127.0.0.1", 5700)
+    if not (CFG.get("qzone") or {}).get("bridge_enable", True):
+        add("bridge", "空间桥接", "off", "关着（qzone.bridge_enable=false）")
+    elif _port_open(bridge_host, bridge_port):
+        add("bridge", "空间桥接", "ok", f"{bridge_host}:{bridge_port} 已监听")
+    else:
+        add("bridge", "空间桥接", "warn",
+            f"{bridge_host}:{bridge_port} 连不上",
+            "qzone-bridge 没启动 → 她看不到好友动态、发不了说说；不影响群聊")
+
+    ws_port = int(CFG.get("ws_port", 6199))
+    ws_up = _port_open(host, ws_port)
+    try:
+        import onebot as _ob  # noqa: PLC0415
+        _spec = _ob.pick_adapter(CFG, BASE.parent)
+        _name = _spec.label if _spec else "（未探测到，可能是外部自备）"
+    except Exception:  # noqa: BLE001
+        _name = "（读不出接入端配置）"
+    add("onebot", "QQ 接入端", "ok" if ws_up else "warn",
+        f"{host}:{ws_port} " + ("已监听" if ws_up else "还没连上") + f"；接入端={_name}",
+        f"接入端要反向连到 ws://{host}:{ws_port}/ws，"
+        f"token 必须与 config.json 的 access_token 一致")
+
+    GLOBAL_SELFCHECK.clear()
+    GLOBAL_SELFCHECK.extend(out)
+    for it in out:
+        icon = {"ok": "✅", "warn": "⚠️", "error": "❌", "off": "⏸️"}.get(it["level"], "•")
+        line = f"{icon} {it['label']}：{it['detail']}"
+        if it["hint"] and it["level"] in ("warn", "error"):
+            line += f"  → {it['hint']}"
+        if it["level"] == "error":
+            logger.error("[自检] %s", line)
+        elif it["level"] == "warn":
+            logger.warning("[自检] %s", line)
+        else:
+            logger.info("[自检] %s", line)
+    bad = [it for it in out if it["level"] == "error"]
+    if bad:
+        logger.error("[自检] 有 %d 项不可用，功能会缺失；详细原因见上面几行。"
+                     "也可以跑 tools/doctor.py 做一次完整体检。", len(bad))
+    return out
+
+
 async def main() -> None:
     global LOOP
     acquire_lock()
     tokens_load()          # 把永久累计读回来（文件不在就建一份）
     _warn_admin_unset()    # admin 名单为空 = 不限制，得让人知道
     host = CFG.get("ws_host", "127.0.0.1")
+    _startup_selfcheck()   # 逐项体检：哪个功能为什么不可用，启动时就说清楚
     port = int(CFG.get("ws_port", 6199))
     try:
         async with websockets.serve(ws_handler, host, port, ping_interval=20, ping_timeout=60):

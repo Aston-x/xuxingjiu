@@ -1,0 +1,47 @@
+# 许杏玖 qqbot —— systemd 用户服务模板（Linux）
+#
+# 用法：
+#   1) 把 WorkingDirectory / ExecStart 里的路径改成你 clone 的位置
+#   2) mkdir -p ~/.config/systemd/user
+#      cp deploy/qqbot.service.example ~/.config/systemd/user/qqbot.service
+#   3) systemctl --user daemon-reload
+#      systemctl --user enable --now qqbot
+#      systemctl --user status qqbot
+#
+# 注意：
+#   · 用**用户级**服务（--user）而不是系统级，因为它要读你 home 下的 .venv 与 config.json；
+#   · 想让服务在你注销后继续跑，需要 `sudo loginctl enable-linger $USER`，
+#     否则登出即停（systemd 用户实例默认随会话结束）；
+#   · 日志走 journald：journalctl --user -u qqbot -f
+#     （项目自己的日志仍在 qqbot/bot.log 与控制台里，两条路都能看）
+#   · **这个模板只起 bot 与空间桥**；QQ 接入端（NapCat Docker / Lagrange）建议另做一个
+#     服务或容器，让它反向连到 6199。别把接管 QQ 的那一步塞进这里，出问题不好定位。
+
+[Unit]
+Description=Xuxingjiu QQ bot (qqbot)
+Documentation=https://github.com/your-name/xuxingjiu
+# 空间桥接是另一个服务/进程；这里只声明顺序意图，不强制依赖
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/xuxingjiu/qqbot
+# 直接前台跑 bot.py：它会一直阻塞（Type=simple 要的就是这个），
+# 不需要 launcher 那套"后台 spawn + 守护"——那个是给 Windows 双击用的，
+# 监督工作交给 systemd（Restart=on-failure）比自己的守护循环更可靠。
+# bot.py 自带单实例锁（跨平台），重复启动会自己 exit(2)。
+ExecStart=%h/xuxingjiu/qqbot/.venv/bin/python %h/xuxingjiu/qqbot/bot.py
+Restart=on-failure
+RestartSec=5
+# 它要写状态文件、日志、生成图片，给一个独立的工作目录就行
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qqbot
+# 温和一点：别让它把整机的 CPU/IO 吃满（本地跑模型时才需要放开）
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+[Install]
+WantedBy=default.target

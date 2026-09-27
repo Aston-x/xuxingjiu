@@ -44,29 +44,44 @@ LLM API — it is built around one specific character:
 
 ## Quick start
 
+**One command** (creates the venv, installs deps, generates the config, runs a health check):
+
 ```bash
-# 1) bot core
-cd qqbot
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt     # Windows
-cp config.example.json config.json                              # then edit it
-#    At minimum: bot_qq (the bot account) and admin.user_ids (your account)
-#    Keep API keys in environment variables, never in config.json
-set DEEPSEEK_API_KEY=sk-xxxx                                    # PowerShell: $env:DEEPSEEK_API_KEY="sk-xxxx"
+# Windows: double-click install.bat, or
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
-# 2) QZone bridge (optional)
-cd ../qzone-bridge
-npm install
-cp .env.example .env
+# Linux / macOS:
+bash install.sh
+```
 
-# 3) NapCat (third party — download it yourself)
-#    See docs/部署.md (Chinese)
+Then edit three keys in `qqbot/config.json`:
 
-# 4) launch — double-click, no console window
-double-click qqbot\启动.pyw      # or: python qqbot/launcher.py start
+| Key | Value |
+| --- | --- |
+| `bot_qq` | the bot's QQ number |
+| `admin.user_ids` | your own QQ number |
+| `access_token` | any random string (the QQ front-end must use the same one) |
+
+API keys go in environment variables — never in the file:
+
+```bash
+# Windows
+set DEEPSEEK_API_KEY=sk-xxxx
+# Linux / macOS
+export DEEPSEEK_API_KEY=sk-xxxx
+```
+
+Finally install a QQ front-end and launch:
+
+```bash
+# Windows: NapCat (see NapCat/README.md), then double-click deploy\start-all.pyw
+# Linux / macOS: see docs/部署-Linux.md, then bash deploy/start-all.sh
 ```
 
 The web console is at <http://127.0.0.1:6200/>; the token lives in `qqbot/state/console-token`.
+
+> Something off? Run `python qqbot/tools/doctor.py` — it tells you *which* piece is
+> unconfigured, why, and how to fix it.
 
 ## The model-access layer
 

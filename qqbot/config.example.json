@@ -3,6 +3,10 @@
   "ws_host": "127.0.0.1",
   "ws_port": 6199,
   "access_token": "",
+  "onebot": {
+    "_说明": "QQ 接入端（OneBot v11 实现）。auto = 按目录自动探测；napcat = 强制用 NapCat；none = 你自己管接入端，启动器完全不碰它。任何 OneBot v11 实现都能接：反向连到 ws_host:ws_port/ws，token 与上面的 access_token 保持一致。",
+    "adapter": "auto"
+  },
   "bot_qq": 10001,
   "console": {
     "_说明": "Web 控制台 http://127.0.0.1:6200 。token 留空则自动生成到 state/console-token；面板展示的所有密钥都会被脱敏。日志源与 qzone 令牌文件默认按「同级目录」自动推导（qqbot / qzone-bridge / NapCat 平级），搬盘不用改这里。",
@@ -373,7 +377,15 @@
       "急什么，马上",
       "等着"
     ],
-    "_说明": "三种模式：solo = 只有她 / duo = 她和朋友的合照 / scenery = 纯景没人。★ 外貌只在 character_tags 里定义一次、由代码统一拼接，模型不许自己写外貌 —— 这是保证「每张图里是同一个人」的关键。size 按模式给（SDXL 原生 1024，别低于它）。hires 二次放大能明显改善手部；显存不够就把它 enable 设为 false。换模型时改 model_family 并替换 quality_prefix/negative 里的 score 标签。"
+    "_说明": "三种模式：solo = 只有她 / duo = 她和朋友的合照 / scenery = 纯景没人。★ 外貌只在 character_tags 里定义一次、由代码统一拼接，模型不许自己写外貌 —— 这是保证「每张图里是同一个人」的关键。size 按模式给（SDXL 原生 1024，别低于它）。hires 二次放大能明显改善手部；显存不够就把它 enable 设为 false。换模型时改 model_family 并替换 quality_prefix/negative 里的 score 标签。",
+    "fail_enable": true,
+    "fail_lines": [
+      "画不出来。",
+      "……失败了，等下再试。",
+      "网不好，没画成。",
+      "手抖了，重来。",
+      "算了，不画了。"
+    ]
   },
   "web": {
     "enable": true,
@@ -888,6 +900,20 @@
         "providers/manifests/local-servers.json",
         "providers/manifests/cn-vendors.json"
       ]
+    }
+  },
+  "imagegen": {
+    "_说明": "生图后端。endpoints 想加几个加几个（本地 4 家 / 云端 5 家都行），chains.image 决定先试谁。endpoints 留空时自动用顶层 sd.* 推导出一个本地端点 —— 老配置不改也能画。文档：docs/生图.md",
+    "enable": true,
+    "probe_seconds": 300,
+    "cloud": {
+      "_说明": "云端生图是花钱的：max_per_day 是全局每日上限（0=不限）；allow_when=low-spec 时只有低分辨率请求才走云端，never 则全关",
+      "max_per_day": 5,
+      "allow_when": "always"
+    },
+    "endpoints": [],
+    "chains": {
+      "image": []
     }
   }
 }

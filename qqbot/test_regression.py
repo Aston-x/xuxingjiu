@@ -1,6 +1,7 @@
 """重构后全量回归：确认行为与重构前一致。"""
 import asyncio
 import json
+import os
 import pathlib
 import sys
 import time
@@ -8,8 +9,18 @@ from datetime import datetime
 
 # 项目根：由文件自身位置推导，搬盘/改目录名都不用动这里
 BASE_DIR = pathlib.Path(__file__).resolve().parent
+
+# 仓库里**不提交** config.json（它含明文密钥）。跑测试时若不存在，就从模板造一份 ——
+# 内容是脱敏的模板值（bot_qq=10001 之类），只够把流程跑通，不会碰真实配置。
+_CFG_PATH = BASE_DIR / "config.json"
+if not _CFG_PATH.exists():
+    _tpl = BASE_DIR / "config.example.json"
+    if _tpl.exists():
+        _CFG_PATH.write_text(_tpl.read_text(encoding="utf-8"), encoding="utf-8")
+        print("[test] 没有 config.json，已从 config.example.json 生成一份模板配置")
+
 sys.path.insert(0, str(BASE_DIR))
-import bot
+import bot  # noqa: E402
 
 BOT = 10001
 ADMIN = 10002
@@ -124,13 +135,20 @@ async def fake_call(action, params=None, timeout=20):
 
 
 async def fake_gen(intent, life=None, purpose="group"):
+    """假出图：记下用途、返回成功结果。
+
+    注意要打的是 `generate_outcome`（结构化返回）而不是 `generate` ——
+    后者只是它的薄包装，真流程走的是 outcome 那条路。
+    """
     made.append(purpose)
-    return str(BASE_DIR / "generated" / "fake.png")
+    p = str(BASE_DIR / "generated" / "fake.png")
+    return bot.GenOutcome(ok=True, data=b"\x89PNG fake", path=p,
+                          endpoint_id="fake", detail=p)
 
 
 bot.OB.call = fake_call
 bot.SDGEN.enable = True
-bot.SDGEN.generate = fake_gen
+bot.SDGEN.generate_outcome = fake_gen
 
 _mid = [70000]
 
@@ -2870,7 +2888,8 @@ async def main():
                   for it in flat_l32.values()))
 
         # op 校验：表外路径一律拒
-        for bad_path in ("sd.enable", "nope.nope", ""):
+        # 注意用 sd.not_exists：sd.enable 现在是**合法**的开关（本轮新加的）
+        for bad_path in ("sd.not_exists", "nope.nope", ""):
             try:
                 bot.console_apply("switch_set", {"path": bad_path, "value": True})
                 check(f"switch_set 表外路径被拒（{bad_path!r}）", False, "竟然接受了")
@@ -2909,14 +2928,21 @@ async def main():
             except ValueError:
                 check(f"vision_set 拒掉 {bad_b!r}（只认四个枚举）", True)
 
-        # 表里不许有出图（sd.*）的东西
-        check("开关表里没有出图的键",
-              not [p for p in bot.CONSOLE_SWITCHES if p.startswith("sd.")])
-        check("可调表里没有出图的键",
+        # 出图相关的键**只允许白名单里的这几个**进控制台：
+        #   sd.enable / sd.fail_enable / imagegen.enable -> 开关表（本轮新增，用户要的）
+        #   sd.pre_reply_lines / sd.fail_lines           -> 列表表（话术池）
+        # 用白名单而不是"一律不许"，是为了把判断逼到明面上：以后往 sd 段加键时，
+        # 想暴露给用户就必须来这里登记一次，而不是不知不觉多出一个开关。
+        ALLOW_SD_SWITCH = {"sd.enable", "sd.fail_enable", "imagegen.enable"}
+        ALLOW_SD_LIST = {"sd.pre_reply_lines", "sd.fail_lines"}
+        got_sw = {p for p in bot.CONSOLE_SWITCHES if p.startswith(("sd.", "imagegen."))}
+        check("开关表里的出图键都在白名单内", got_sw <= ALLOW_SD_SWITCH, str(sorted(got_sw)))
+        check("生图开关确实进表了（用户要能关掉生图）",
+              {"sd.enable", "imagegen.enable"} <= got_sw, str(sorted(got_sw)))
+        check("可调表（滑块）里仍然不许有出图的键",
               not [p for p in bot.CONSOLE_TUNABLES if p.startswith("sd.")])
-        check("列表表里 sd.* 只有那条明许的话术池",
-              {p for p in bot.CONSOLE_LISTS if p.startswith("sd.")} == {"sd.pre_reply_lines"},
-              str([p for p in bot.CONSOLE_LISTS if p.startswith("sd.")]))
+        got_ls = {p for p in bot.CONSOLE_LISTS if p.startswith("sd.")}
+        check("列表表里的 sd.* 在话术白名单内", got_ls <= ALLOW_SD_LIST, str(sorted(got_ls)))
 
         # _tunable_group：顶层那几个回复手感键归到 reply（否则面板显示英文键名）
         for p in ("active_reply_probability", "max_reply_chars", "max_context_turns",
@@ -3016,6 +3042,51 @@ async def main():
         check(f"LOADERS 里接上了 {_key33} -> {_fn33b} -> {_box33b}",
               f"'{_key33}'" in html33 and _fn33b in html33 and f"'{_box33b}'" in html33)
 
+    # ── 模型端点面板（只读 + 重载）：五处必须同时接线 ──
+    _r33p = _cs33.Handler._KINDS.get("providers")
+    check("路由 /api/bot/providers -> kind=providers",
+          _r33p is not None and _r33p[0] == "providers", str(_r33p))
+    check("写操作 provider_reload 在 console_server 白名单里",
+          "provider_reload" in _cs33.WRITE_OPS)
+    check('面板容器 p-providers 存在', 'id="p-providers"' in html33)
+    for _fn33p in ("renderProviders", "reloadProviders", "epsTable", "chainsBox"):
+        check(f"渲染/动作函数 {_fn33p} 存在", ("function " + _fn33p) in html33)
+    check("LOADERS 里接上了 providers -> renderProviders -> p-providers",
+          "'providers'" in html33 and "renderProviders" in html33
+          and "'p-providers'" in html33)
+    # 后端：这个 kind 必须真能返回，否则前端拿到 500
+    _snap33p = bot.console_snapshot("providers")
+    check("console_snapshot('providers') 能返回 chat/image 两段",
+          _snap33p.get("ok") and isinstance(_snap33p.get("chat"), dict)
+          and isinstance(_snap33p.get("image"), dict), str(list(_snap33p))[:120])
+
+    # ★ 密钥绝不能出现在这个新接口里（含 base_url 里内嵌的 ?key=）
+    _blob33 = json.dumps(_snap33p, ensure_ascii=False)
+    _leak33 = []
+    for _ep33 in bot.ROUTER.endpoints:
+        _k = _ep33.auth()
+        if _k and len(_k) >= 6 and _k in _blob33:
+            _leak33.append(_ep33.id)
+    for _ep33 in bot.IMAGE_ROUTER.endpoints:
+        _k = _ep33.auth()
+        if _k and len(_k) >= 6 and _k in _blob33:
+            _leak33.append(_ep33.id)
+    check("端点密钥不在 providers 快照里", not _leak33, str(_leak33))
+    # 有些厂商（Gemini 老写法 / 某些网关）把 key 塞在查询串里，上屏前必须抹掉
+    from providers.router import _safe_url as _su33
+    check("base_url 的查询串值会被抹成 ***",
+          _su33("https://x/v1?key=abc123&t=1") == "https://x/v1?key=***&t=***",
+          _su33("https://x/v1?key=abc123&t=1"))
+    check("没有查询串时原样返回", _su33("https://x/v1") == "https://x/v1")
+
+    # 卡片编号：新增面板最容易漏的一步（顺移 / 接号）。现有回归原来没有这条断言。
+    _nums33 = _re33.findall(r'<span class="n">(B\d\d)</span>', html33)
+    check("卡片编号无重复", len(_nums33) == len(set(_nums33)),
+          f"重复：{sorted({n for n in _nums33 if _nums33.count(n) > 1})}")
+    check("卡片编号连续无跳号（追加在末尾也要接上）",
+          _nums33 == [f"B{i:02d}" for i in range(1, len(_nums33) + 1)],
+          f"实际：{_nums33}")
+
     # ══════════════════════════════════════════════════════════════════
     # 【34】Provider 注册中心：把离线单测并进来，保证「一条命令全绿」
     # ══════════════════════════════════════════════════════════════════
@@ -3046,10 +3117,212 @@ async def main():
     else:
         check("（没有配 concurrency 的端点，跳过信号量检查）", True)
 
-    # ── 尾部污染自检：【24】~【34】是在隔离撤销之后跑的，得单独复核一遍 ──
+    # ══════════════════════════════════════════════════════════════════
+    # 【35】生图层：离线单测 + 额度只退一次 + 失败反馈分流
+    # ══════════════════════════════════════════════════════════════════
+    print("\n【35】生图层：离线单测 + 额度只退一次 + 失败原因分流")
+    import test_imagegen as _ti35
+    _ok_b35, _fail_b35 = _ti35.ok, _ti35.fail
+    await _ti35.main()
+    globals()["ok"] += _ti35.ok - _ok_b35
+    globals()["fail"] += _ti35.fail - _fail_b35
+    check("生图层离线单测全绿", _ti35.fail == _fail_b35,
+          f"{_ti35.fail - _fail_b35} 项失败")
+
+    _S35 = bot.SDGEN
+    _real35 = (_S35.state_path, _S35.dir, _S35.enable, _S35._draw_locked)
+
+    async def _fail_draw35(intent, life=None, purpose="group"):
+        return bot.GenOutcome(ok=False, reason="failed", detail="假装失败")
+
+    async def _ok_draw35(intent, life=None, purpose="group"):
+        _S35.dir.mkdir(parents=True, exist_ok=True)
+        p = str(_S35.dir / "ok.png")
+        pathlib.Path(p).write_bytes(b"png")
+        return bot.GenOutcome(ok=True, data=b"png", path=p, endpoint_id="fake", detail=p)
+
+    try:
+        _S35.state_path = BASE_DIR / "_tmp_sd35.json"
+        _S35.dir = BASE_DIR / "_tmp_sd35_dir"
+        _S35.enable = True
+        _S35.state = {"group": [], "qzone_date": "", "qzone": 0}
+
+        # ★ 额度只退一次：老代码在 _draw_locked 与 generate 各退一次，
+        #   任何在这中间抛异常的改动都会让 sd_state.json 凭空少一张（很难复现的那种）。
+        _S35._draw_locked = _fail_draw35
+        _before = len(_S35.state["group"])
+        # ★ 测试开头把 SDGEN.generate_outcome 换成了假桩（fake_gen），
+        #   所以这里要绕过实例属性、直接调类的真方法，否则测的是桩不是实现。
+        await bot.SD.generate_outcome(_S35, "画个试试", None, "group")
+        _after = len(_S35.state["group"])
+        check("出图失败后额度净变化为 0（不是负一）", _after == _before,
+              f"{_before} -> {_after}")
+
+        _S35._draw_locked = _ok_draw35
+        _out35 = await bot.SD.generate_outcome(_S35, "画个试试", None, "group")
+        check("出图成功后额度 +1", len(_S35.state["group"]) == _after + 1,
+              f"{_after} -> {len(_S35.state['group'])} "
+              f"outcome=ok:{_out35.ok} reason:{_out35.reason} detail:{_out35.detail}")
+
+        # 抛异常也要退还（finally 出口）
+        def _boom35(intent, life=None, purpose="group"):
+            raise RuntimeError("模拟内部炸了")
+        _S35._draw_locked = _boom35
+        _b2 = len(_S35.state["group"])
+        try:
+            await bot.SD.generate_outcome(_S35, "画个试试", None, "group")
+        except RuntimeError:
+            pass
+        check("内部抛异常时额度也退回去了", len(_S35.state["group"]) == _b2,
+              f"{_b2} -> {len(_S35.state['group'])}")
+
+        _S35._draw_locked = _ok_draw35
+        check("check_ready：有端点时通过",
+              _S35.check_ready("group", has_intent=True)[0] is True)
+        _ok_e, _r_e, _ = _S35.check_ready("group", has_intent=False)
+        check("check_ready：没说要画 -> empty-intent（正常态）",
+              (not _ok_e) and _r_e == "empty-intent", _r_e)
+        _S35.enable = False
+        _ok_f, _r_f, _ = _S35.check_ready("group")
+        check("check_ready：总闸关着 -> disabled（正常态）",
+              (not _ok_f) and _r_f == "disabled", _r_f)
+        check("disabled 属正常态（不该给用户发失败话）",
+              bot.GenOutcome(ok=False, reason="disabled").benign is True)
+        check("backend-down 属故障态（要给话 + 通知）",
+              bot.GenOutcome(ok=False, reason="backend-down").benign is False)
+    finally:
+        _S35.state_path, _S35.dir, _S35.enable, _S35._draw_locked = _real35
+        _keep35 = _S35.state
+        _S35.load_state()
+        _ = _keep35
+        __import__("shutil").rmtree(BASE_DIR / "_tmp_sd35_dir", ignore_errors=True)
+        (BASE_DIR / "_tmp_sd35.json").unlink(missing_ok=True)
+
+    # 失败话术：配置里的话能取到、能被开关关掉
+    _real_sd35 = bot.CFG.get("sd")
+    try:
+        bot.CFG["sd"] = {**(bot.CFG.get("sd") or {}),
+                         "fail_enable": True, "fail_lines": ["画坏了。"]}
+        check("fail_line 取到配置里的失败话", bot.fail_line() == "画坏了。", bot.fail_line())
+        bot.CFG["sd"]["fail_enable"] = False
+        check("sd.fail_enable=false 时保持沉默", bot.fail_line() == "", bot.fail_line())
+    finally:
+        bot.CFG["sd"] = _real_sd35
+
+    # ══════════════════════════════════════════════════════════════════
+    # 【36】跨平台运行层：文件锁 / 探测解析 / venv 路径 / URL 脱敏
+    # ══════════════════════════════════════════════════════════════════
+    print("\n【36】跨平台：文件锁 / 端口探测 / venv 路径")
+    import filelock as _fl36
+    import launcher as _lc36
+
+    _tmp36 = BASE_DIR / "_tmp_lock36"
+    try:
+        _tmp36.mkdir(exist_ok=True)
+        _lk = _tmp36 / "a.lock"
+        _fh1, _ = _fl36.acquire(_lk)
+        check("第一次能拿到锁", _fh1 is not None)
+        _fh2, _holder = _fl36.acquire(_lk)
+        # 只断言"拿不到锁"。持有者 PID 在 Windows 上读不到（LockFile 语义会连读取
+        # 一起拒掉），所以不能拿它当断言条件 —— 那是尽力而为的提示信息。
+        check("同一文件第二次拿不到（单实例生效）", _fh2 is None, f"{_fh2} {_holder}")
+        _fl36.release(_fh1)
+        _fh3, _ = _fl36.acquire(_lk)
+        check("释放后能再拿到（陈旧锁自愈）", _fh3 is not None)
+        _fl36.release(_fh3)
+    finally:
+        __import__("shutil").rmtree(_tmp36, ignore_errors=True)
+
+    # ENOTSUP（NFS / 容器 overlay）必须降级放行 —— 否则 bot 在容器里根本起不来
+    _real_try = _fl36.try_lock
+    try:
+        import errno as _errno
+        if os.name != "nt":
+            def _notsup(_fh):
+                raise OSError(_errno.ENOTSUP, "not supported")
+            _fl36.try_lock = _notsup
+            _fh4, _ = _fl36.acquire(_tmp36 / "nfs.lock") if _tmp36.exists() else (object(), 0)
+            check("文件系统不支持锁时降级放行（不把启动卡死）", True)
+        else:
+            check("（Windows 无 flock，跳过 ENOTSUP 用例）", True)
+    finally:
+        _fl36.try_lock = _real_try
+
+    # venv 路径按平台分派（用 PurePath 判，避免在源码里跟反斜杠转义较劲）
+    _vp = str(_lc36.VENV_PY).replace("\\", "/")
+    if os.name == "nt":
+        check("Windows 上 venv 走 Scripts/python.exe",
+              _vp.endswith(".venv/Scripts/python.exe"), _vp)
+    else:
+        check("POSIX 上 venv 走 bin/python*", "/.venv/bin/python" in _vp, _vp)
+
+    # 探测层：喂真实的 Windows netstat 样本，断言解析正确
+    class _R36:
+        def __init__(self, out: str):
+            self.stdout = out
+            self.returncode = 0
+
+    _real_run36 = _lc36._run
+    _win_sample = (
+        "\r\n活动连接\r\n\r\n  协议  本地地址          外部地址        状态           PID\r\n"
+        "  TCP    127.0.0.1:6199         0.0.0.0:0              LISTENING       41840\r\n"
+        "  TCP    127.0.0.1:6200         0.0.0.0:0              LISTENING       41840\r\n"
+        "  TCP    127.0.0.1:5700         0.0.0.0:0              LISTENING       18460\r\n"
+    )
+    try:
+        if os.name == "nt":
+            _lc36._run = lambda args, **kw: _R36(_win_sample)
+            check("从 netstat 输出里解析出 6199 的 PID",
+                  _lc36.port_pid(6199) == 41840, str(_lc36.port_pid(6199)))
+            _lc36._run = lambda args, **kw: _R36(
+                '"pythonw.exe","41840","Console","1","43,656 K"\r\n')
+            check("从 tasklist CSV 里解析出镜像名（内存列含逗号也不怕）",
+                  _lc36._win_image_name(41840) == "pythonw", _lc36._win_image_name(41840))
+        else:
+            check("（非 Windows 上的 netstat 解析跳过）", True)
+    finally:
+        _lc36._run = _real_run36
+
+    # 命令特征判归属：cmdline 命中就算自己的进程（跨平台唯一可靠依据）
+    _real_info36 = _lc36.proc_info
+    try:
+        _lc36.proc_info = lambda pid: {"name": "python3",
+                                       "cmdline": "/x/.venv/bin/python launcher.py start",
+                                       "cwd": "/x/qqbot"}
+        _who, _why = _lc36.owns_port(6199)
+        check("命令行匹配 bot.py/launcher.py 就认作自己人",
+              "命令行匹配" in _why or "工作目录" in _why, _why)
+        _lc36.proc_info = lambda pid: {"name": "chrome", "cmdline": "chrome --type=gpu",
+                                       "cwd": "/Applications"}
+        _who2, _why2 = _lc36.owns_port(6199)
+        check("别人的程序会被明确标出「不是预期程序」", "不是预期程序" in _why2, _why2)
+    finally:
+        _lc36.proc_info = _real_info36
+
+    check("EXPECT_CMD 已按命令行特征配置", "bot.py" in _lc36.EXPECT_CMD[6199],
+          str(_lc36.EXPECT_CMD))
+
+    # host:port 解析（自检里用来找空间桥端口）
+    check("能从 URL 里抠 host:port",
+          bot._parse_hostport("http://127.0.0.1:5700/status", "x", 1) == ("127.0.0.1", 5700))
+    check("抠不出端口就用默认端口",
+          bot._parse_hostport("这不是URL", "127.0.0.1", 5700)[1] == 5700,
+          str(bot._parse_hostport("这不是URL", "127.0.0.1", 5700)))
+
+    # 启动自检：结构完整、能给等级
+    _sc36 = bot._startup_selfcheck()
+    check("启动自检有结果", bool(_sc36) and all(
+        {"key", "label", "level", "detail"} <= set(x) for x in _sc36), str(_sc36)[:160])
+    check("自检等级取值合法",
+          all(x["level"] in ("ok", "warn", "error", "off") for x in _sc36),
+          str([x["level"] for x in _sc36]))
+    check("自检结果进了 providers 快照",
+          bool(bot.console_snapshot("providers").get("selfcheck")))
+
+    # ── 尾部污染自检：【24】~【36】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]
-    check("【24】~【34】也没有污染真实状态文件", not changed_tail,
+    check("【24】~【36】也没有污染真实状态文件", not changed_tail,
           f"被改动的：{changed_tail}（去这几段里把可写路径补上隔离）")
     __import__("shutil").rmtree(TAIL_DIR, ignore_errors=True)
 

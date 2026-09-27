@@ -1,0 +1,79 @@
+name: Bug 报告
+description: 有东西不按预期工作
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        报之前请先跑一次体检，它能定位一半的问题：
+
+        ```
+        qqbot/.venv/bin/python qqbot/tools/doctor.py --json
+        ```
+
+        ⚠️ **贴日志/截图前先扫一眼有没有密钥、真实 QQ 号或聊天记录**。
+        要举例子请用项目里的合成号（`10001` / `10002` / `999000001`）。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 你期望发生什么，实际发生了什么。
+      placeholder: |
+        期望：发 [画图:猫] 会出一张图
+        实际：她回了一句"稍等"，然后什么都没有
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 在某群里发 ...
+        2. 等 30 秒
+        3. 看控制台「日志」页，出现 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor --json 的输出
+      render: json
+      description: 直接粘贴，不要截图（截图里的密钥没法自动脱敏）。
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: "`git rev-parse --short HEAD` 的输出，或你下载的 Release 标签"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 系统
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Docker / 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 相关配置（**脱敏后**）
+      description: |
+        只贴相关的段落，比如 providers / imagegen / sd 段。
+        **务必把 api_key、access_token、Cookie 换成 `xxx`**。
+      render: jsonc
+    validations:
+      required: false

@@ -1,0 +1,60 @@
+许杏玖 · 一键安装包
+================================
+
+这个压缩包里**只有安装脚本，没有源码** —— 脚本会自己去取代码。
+（这样包很小，也不会跟仓库版本脱节。）
+
+包里有什么
+----------
+  install.bat        Windows：双击这个
+  install.ps1        Windows 的实际逻辑（install.bat 会调它）
+  install.sh         Linux / macOS：bash install.sh
+  安装说明.txt        本文件
+  doctor.py          环境体检工具（安装脚本会自动跑一次）
+
+怎么用
+------
+  Windows：
+    双击 install.bat
+    （它会在当前目录建一个 xuxingjiu/ 目录并装进去）
+
+  Linux / macOS：
+    bash install.sh
+
+  想装到别处 / 换仓库地址：
+    Windows:  powershell -ExecutionPolicy Bypass -File install.ps1 -TargetDir D:\bot -RepoUrl <你的仓库>
+    POSIX:    TARGET_DIR=/opt/bot REPO_URL=<你的仓库> bash install.sh
+
+装完之后
+--------
+  1. 改 qqbot/config.json：
+       bot_qq         机器人 QQ 号
+       admin.user_ids 你自己的 QQ 号
+       access_token   自己编一串随机字符（QQ 接入端要填一样的）
+  2. 配模型：设环境变量（如 DEEPSEEK_API_KEY），或在 providers.endpoints 里
+     指向本地模型（LM Studio / Ollama …）
+  3. 装 QQ 接入端：Windows 用 NapCat（见 NapCat/README.md）；
+     Linux/macOS 见 docs/部署-Linux.md
+  4. 启动：Windows 双击 deploy/start-all.pyw；POSIX 跑 bash deploy/start-all.sh
+
+装完不确定哪里不对
+------------------
+  qqbot\.venv\Scripts\python.exe qqbot\tools\doctor.py     （Windows）
+  /path/to/qqbot/.venv/bin/python qqbot/tools/doctor.py    （POSIX）
+
+  它会逐项告诉你「哪一项没配好、为什么、怎么修」。
+
+几条必须知道的事
+----------------
+  ⚠️ 绝不要 taskkill /IM QQ.exe（Windows）或 pkill -f QQ（Linux/macOS）。
+     你的日常号和机器人号可能是同一个客户端进程，按名字杀会把大号一起带走。
+
+  ⚠️ config.json / .env 含明文密钥，别提交、别外传。
+     想分享配置请用 config.example.json。
+
+  ⚠️ 本项目的 QQ 空间相关代码基于对公开接口的观察与逆向验证，
+     使用它可能违反腾讯的服务条款。仅供学习研究，风险自负。
+
+项目主页 / 问题反馈
+-------------------
+  （把你仓库的地址写在这里）

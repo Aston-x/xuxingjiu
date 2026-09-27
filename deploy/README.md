@@ -1,4 +1,6 @@
-# deploy —— 一键启动 / 停止
+# deploy —— 一键启动 / 停止（分平台）
+
+## Windows
 
 | 文件 | 作用 |
 | --- | --- |
@@ -7,27 +9,46 @@
 
 双击即可，**不会出现终端黑窗口**（用 `pythonw.exe` 跑 `.pyw`）。
 
+## Linux / macOS
+
+| 文件 | 作用 |
+| --- | --- |
+| `start-all.sh` | 同上，用 `.venv/bin/python launcher.py start` |
+| `stop-all.sh` | 同上 |
+| `qqbot.service.example` | systemd **用户级**服务模板（开机自启 / 崩溃重启） |
+
+```bash
+bash deploy/start-all.sh          # 启动
+bash deploy/stop-all.sh           # 停止
+# 或交给 systemd：
+cp deploy/qqbot.service.example ~/.config/systemd/user/qqbot.service
+systemctl --user enable --now qqbot
+```
+
+> `start-all.sh` 里用的是 `exec`，所以要放后台自己加 `nohup ... &` 或用 systemd。
+> 真正"不占终端"靠的是 `launcher.py` 内部的 `start_new_session=True`（等价 setsid）。
+
 ## 顺序为什么重要
 
-这是**反向 WebSocket**：NapCat 主动连到 qqbot 的 6199 端口。所以必须
-**先让 qqbot 在 6199 上等着**，再拉起 NapCat。`launcher.py` 已经按这个顺序编排，
-而且每一步都会先探测端口、核对进程镜像名，只补启**缺失**的组件。
+这是**反向 WebSocket**：接入端（默认 NapCat）主动连到 qqbot 的 6199 端口。
+所以必须**先让 qqbot 在 6199 上等着**，再拉起接入端。
+`launcher.py` 已经按这个顺序编排，而且每一步都会先探测端口、核对进程的
+**命令行特征**（不再只看镜像名），只补启**缺失**的组件。
 
-## 为什么不用 .bat
+## 🔴 一条跨平台通用的红线
 
-`.bat` 必然带一个控制台窗口。`.pyw` 由 `pythonw.exe` 执行，天生无窗口，
-日志也全部落到 `qqbot/bot_boot.log` 与控制台的「日志」页。
-
-NapCat 自己的 `launcher-user.bat` 是上游提供的、必须有窗口（登录 QQ 时要看提示），
-所以那一步我们只在需要时提示你去手动双击，不代替它。
+**绝不要 `taskkill /IM QQ.exe`（Windows）或 `pkill -f QQ`（Linux/macOS）。**
+你的日常号和机器人号可能用同一份 QQ 客户端安装（Windows 上尤其如此），
+按名字杀会把大号一起带走。需要停进程时一律**按端口定位 → 核对命令行特征 → 才动手**，
+QQ 永远不在候选列表里。`launcher.stop_*` 就是这么写的。
 
 ## 依赖
 
-`start-all.pyw` 会检查：
+`start-all` 会检查：
 
 1. `qqbot/launcher.py` 在不在；
-2. `qqbot/.venv` 装好了没 —— 没装会弹框告诉你怎么装；
-3. `qqbot/config.json` 在不在 —— 没有会提示你先从 `config.example.json` 复制。
+2. `.venv` 装好了没（Windows `.venv/Scripts`、POSIX `.venv/bin`）；
+3. `qqbot/config.json` 在不在。
 
-任何一步失败都会**弹消息框**（无控制台，不弹框你就什么都看不到），
-而不是静默失败。
+Windows 上任何一步失败都会**弹消息框**（无控制台，不弹框你就什么都看不到）；
+POSIX 上直接打到 stderr 并给非零退出码。

@@ -1,8 +1,13 @@
 # NapCat 骨架（第三方组件，本体需自行下载）
 
-这里**只有配置模板与部署说明**，不含 NapCat 本体。原因是 NapCat 是第三方项目，
-有自己的发行节奏与许可，仓库里塞一份二进制既不合适（100MB+，含 DLL 注入组件），
-也没法跟上游保持同步。
+> **先看这句**：NapCat 只是**其中一个** QQ 接入端，而且是 **Windows 注入式**的
+> （hook QQ 客户端进程），Linux / macOS 上不能按这套方式跑。
+> `qqbot` 本身只实现 OneBot v11 的反向 WS 服务端，换成任何 OneBot 实现都能接：
+> 见 [docs/部署-Linux.md](../docs/部署-Linux.md) 的「QQ 接入端」一节。
+> `config.json` 里的 `onebot.adapter` 决定用哪个（`auto` 自动探测 / `napcat` 强制 /
+> `none` 你自己管）。本目录的东西只在选到 `napcat` 时才会被用到。
+
+这里**只有配置模板与部署说明**，不含 NapCat 本体。
 
 ## 1. 下载
 
@@ -25,7 +30,7 @@ NapCat/
 
 ## 2. 配置
 
-把 `config/` 下的模板复制成正式文件（**文件名里的 `<QQ号>` 要换成你自己的机器人 QQ**）：
+把 `config/` 下的模板复制成正式文件：
 
 ```bat
 cd NapCat\config

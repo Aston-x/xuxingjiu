@@ -1,0 +1,53 @@
+name: 安装链路干跑
+
+# 安装脚本自己会坏 —— 改了目录结构、改了 venv 路径、删了个文件，都可能让它挂。
+# 这个 job 保证「新手按 README 走」这条路至少不会在第一步就崩。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  dryrun:
+    name: install --check + doctor
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install.sh --check（只读，不动文件）
+        if: runner.os != 'Windows'
+        run: bash install.sh --check
+
+      - name: install.ps1 -CheckOnly（只读）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./install.ps1 -CheckOnly
+
+      - name: doctor 能在"还没配置"的状态下给出结论
+        shell: bash
+        run: |
+          # 这一步故意不建 venv —— 就是要验证 doctor 在坏环境下也能跑完并报出问题，
+          # 而不是自己崩掉（"体检工具自己挂"是最没用的体检工具）。
+          set +e
+          python qqbot/tools/doctor.py --json > doctor.json
+          RC=$?
+          set -e
+          echo "doctor 退出码 = $RC（期望非 0：还没配 config.json / 没 venv）"
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("doctor.json", encoding="utf-8"))
+          assert "checks" in d and d["checks"], "doctor 没输出任何检查项"
+          ids = [c["id"] for c in d["checks"]]
+          print("检查项：", ", ".join(ids))
+          # 这两项在裸仓库里必然报错，能报出来才说明它真的在工作
+          assert "D4" in ids or "D2" in ids, "doctor 缺少最基本的检查项"
+          print("doctor 输出结构正常")
+          PY

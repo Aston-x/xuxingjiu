@@ -39,29 +39,44 @@
 
 ## 快速开始
 
+**一条命令装好**（会建 venv、装依赖、生成配置、跑体检）：
+
 ```bash
-# 1) 机器人主体
-cd qqbot
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt     # Windows
-cp config.example.json config.json                              # 然后按注释改
-#    至少改两处：bot_qq（机器人 QQ）、admin.user_ids（你的 QQ）
-#    API 密钥一律走环境变量，别写进 config.json
-set DEEPSEEK_API_KEY=sk-xxxx                                    # PowerShell: $env:DEEPSEEK_API_KEY="sk-xxxx"
+# Windows：双击 install.bat，或者
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 
-# 2) QQ 空间桥（可选，不发说说/不刷空间就不装）
-cd ../qzone-bridge
-npm install
-cp .env.example .env
+# Linux / macOS：
+bash install.sh
+```
 
-# 3) NapCat（第三方，需自行下载）
-#    见 docs/部署.md
+然后改 `qqbot/config.json` 里三处，就能起来了：
 
-# 4) 启动（Windows，双击即可，不弹黑窗口）
-双击 qqbot\启动.pyw        # 或 python qqbot/launcher.py start
+| 键 | 填什么 |
+| --- | --- |
+| `bot_qq` | 机器人 QQ 号 |
+| `admin.user_ids` | 你自己的 QQ 号 |
+| `access_token` | 自己编一串随机字符（QQ 接入端要填一样的） |
+
+模型密钥走环境变量（别写进文件）：
+
+```bash
+# Windows
+set DEEPSEEK_API_KEY=sk-xxxx
+# Linux / macOS
+export DEEPSEEK_API_KEY=sk-xxxx
+```
+
+再装 QQ 接入端并启动：
+
+```bash
+# Windows：NapCat（见 NapCat/README.md），然后双击 deploy\start-all.pyw
+# Linux / macOS：见 docs/部署-Linux.md，然后 bash deploy/start-all.sh
 ```
 
 控制台默认在 <http://127.0.0.1:6200/>，令牌见 `qqbot/state/console-token`。
+
+> 装完哪里不对？跑 `python qqbot/tools/doctor.py` —— 它会逐项告诉你
+> 「哪一项没配好、为什么、怎么修」，比翻日志快。
 
 ## 模型接入层（本项目的重点）
 

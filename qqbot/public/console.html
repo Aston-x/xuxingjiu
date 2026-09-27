@@ -952,6 +952,18 @@ html.theme-anim .pill,html.theme-anim .chip,html.theme-anim .wstrip .m,html.them
     <div class="scroll logbox" id="p-logs"></div>
     <div class="note">日志输出已过脱敏（api_key / access_token 等显示为 ***）。</div>
   </div>
+
+  <div class="group-title" id="g-providers"><span class="gdot"></span>模型与生图端点</div>
+  <div class="card span2">
+    <h2><span class="n">B21</span><svg class="ico" aria-hidden="true"><use href="#i-route"></use></svg>
+      <span class="ttl">模型端点</span><span class="sp"></span>
+      <button class="btn sm" onclick="reloadProviders(true)">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重载配置</button></h2>
+    <div id="p-providers"></div>
+    <div class="note">只读：这里展示每个对话 / 生图端点当前的状态。要改端点请编辑
+      <code>config.json</code> 的 <code>providers</code> / <code>imagegen</code> 段，然后点上面的「重载配置」
+      —— 不用重启进程。密钥只显示来源，不显示明文。</div>
+  </div>
 </section>
 
 <!-- ══════════════ 空间 ══════════════ -->
@@ -2530,7 +2542,7 @@ var TUNABLE_GROUP = {
   life: '生活作息', self_activity: '她自己在做什么', reply: '回复节奏',
   split: '分条发送', quote: '引用回复', memory: '记忆', web: '联网搜索',
   weather: '天气', stickers: '表情包', bili: 'B站', cross_group: '跨群', activity: '行为报告',
-  poke: '戳一戳', vision: '识图'
+  poke: '戳一戳', vision: '识图', sd: '生图', local: '本地模型'
 };
 /* 顶层那几个没点号的"回复手感"键（active_reply_probability …）在后端是按路径前缀取分组名的，
    取出来就是键名本身，面板上会直接显示成英文。它们本来就属于「回复节奏」那一组，
@@ -3175,6 +3187,103 @@ async function renderQzoneEvents(){
 }
 
 /* ────────── 调度 ────────── */
+// ── 模型端点（B21）：只读面板 + 一个「重载配置」动作 ──
+// 数据源是 /api/bot/providers，后端直接返回 providers.Router.status() 与
+// imagegen.ImageRouter.status() 的合并视图 —— 里面**不含明文密钥**，只给 key_source。
+async function renderProviders(){
+  var d = await api('/api/bot/providers');
+  if(d && d.ok === false){
+    setBox('p-providers', errBox(d.error || '端点状态取不到'), JSON.stringify(d));
+    return;
+  }
+  var chat = d.chat || {}, img = d.image || {};
+  var html = '';
+
+  // ① 对话模型端点
+  html += '<div class="field"><label>对话模型端点<span class="sp"></span>' +
+    '<span class="mini">' + (chat.legacy_config
+      ? pill('由旧 local/cloud 推导', 'warn') : pill('providers 段', 'ok')) + '</span></label>';
+  html += epsTable(chat.endpoints, 'chat');
+  html += chainsBox(chat.chains, 'chat');
+  html += '</div>';
+
+  // ② 生图端点
+  html += '<div class="field"><label>生图端点<span class="sp"></span>' +
+    '<span class="mini">' + (img.legacy_config
+      ? pill('由旧 sd 段推导', 'warn') : pill('imagegen 段', 'ok')) +
+    (img.cloud_policy && img.cloud_policy !== 'always'
+      ? ' ' + pill('云端策略 ' + img.cloud_policy, 'warn') : '') + '</span></label>';
+  html += epsTable(img.endpoints, 'image');
+  html += chainsBox(img.chains, 'image');
+  html += '</div>';
+
+  // ③ 识图策略与适配器清单
+  var pol = chat.policy || {};
+  html += '<div class="field"><label>识图策略与已装适配器<span class="sp"></span></label>' +
+    kv([['识图后端', esc(pol.backend || '—')],
+        ['中继方式', pol.relay ? pill('先转述再回答', 'ok') : pill('原图直传', '')],
+        ['首个答话端点', esc(pol.first_answerer_id || pol.first_answerer || '—')],
+        ['对话适配器', esc((chat.registry || []).join('、') || '—')],
+        ['生图适配器', esc((img.registry || []).join('、') || '—')]]) + '</div>';
+
+  setBox('p-providers', html, JSON.stringify(d));
+}
+
+function epsTable(list, kind){
+  list = list || [];
+  if(!list.length){
+    return empty(kind === 'image'
+      ? '没有生图端点：生图关着，或者 imagegen.endpoints 是空的、顶层又没有 sd 段。'
+      : '没有对话端点：providers.endpoints 是空的，顶层也没有 local/cloud 段。');
+  }
+  var head = '<tr><th>id</th><th>类型</th><th>模型</th><th>可用</th><th>密钥</th>' +
+    (kind === 'chat' ? '<th>识图</th>' : '<th>能力</th>') + '<th>探针 / 备注</th></tr>';
+  var rows = list.map(function(e){
+    var pr = e.probe || {};
+    var probe = pr.error ? esc(pr.error)
+      : (pr.note || pr.unsupported ? esc(pr.note || '未提供探针')
+        : (pr.models == null ? '—' : esc(pr.models + ' 个模型')));
+    var third = kind === 'chat'
+      ? (e.vision ? pill('支持', 'ok') : pill('不支持', ''))
+      : (e.capability ? esc((e.capability.negative ? '负词✓ ' : '负词✗ ') +
+          (e.capability.hires ? '放大✓' : '放大✗')) : '—');
+    var key = e.has_key
+      ? pill(esc(e.key_source === 'plain' ? '已配（明文）' : e.key_source || '已配置'), 'ok')
+      : pill('没配', 'bad');
+    var usable = e.usable ? pill('可用', 'ok')
+      : pill(esc(e.skip_reason || '不可用'), 'bad');
+    if(e.down) usable += ' ' + pill('退避 ' + e.down.seconds_left + 's', 'warn');
+    return '<tr><td class="sans">' + esc(e.id) + '</td><td>' + esc(e.provider) + '</td>' +
+      '<td>' + esc(e.model || '—') + '</td><td>' + usable + '</td><td>' + key + '</td>' +
+      '<td>' + third + '</td><td class="mini">' + probe + '</td></tr>';
+  }).join('');
+  return '<div class="scroll-x"><table>' + head + rows + '</table></div>';
+}
+
+function chainsBox(chains, kind){
+  chains = chains || {};
+  var keys = Object.keys(chains);
+  if(!keys.length) return '';
+  return '<div class="item-meta">' + keys.map(function(k){
+    return '<span class="chip acc">' + esc(k) + '</span>' +
+      '<span class="mini">' + (chains[k] || []).map(esc).join(' → ') + '</span>';
+  }).join('&nbsp;&nbsp;') + '</div>';
+}
+
+async function reloadProviders(doReload){
+  if(doReload){
+    try{
+      var r = await apply('provider_reload', {});
+      toast('ok', '端点已重载',
+            (r.chat_endpoints || 0) + ' 个对话端点 / ' + (r.image_endpoints || 0) + ' 个生图端点');
+    }catch(e){
+      toast('bad', '重载失败', String((e && e.message) || e));
+    }
+  }
+  delete RENDERED['p-providers'];
+  await runOne('providers', renderProviders, 'p-providers');
+}
+
 var LOADERS = {
   bot: [
     ['status',     renderStatus,       true,  'p-status'],
@@ -3196,6 +3305,7 @@ var LOADERS = {
     ['switches',   renderSwitches,     false, 'p-switches'],
     ['lists',      renderLists,        false, 'p-lists'],
     ['logs',       renderLogs,         false, 'p-logs'],
+    ['providers',  renderProviders,    false, 'p-providers'],
     ['config',     renderConfig,       false, 'p-config']
   ],
   qzone: [

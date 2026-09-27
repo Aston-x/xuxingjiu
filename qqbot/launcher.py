@@ -36,7 +36,19 @@ STOP_FLAG = STATE / "launcher.stop"
 LAUNCH_LOCK = STATE / "launcher.lock"
 MARKER = BASE / "launcher.running.json"
 
-VENV_PY = BASE / ".venv" / "Scripts" / "python.exe"
+def _venv_python() -> Path:
+    """虚拟环境里的解释器。Windows 是 `.venv/Scripts/python.exe`，
+    POSIX 是 `.venv/bin/python`（另兜一个 python3，有些发行版只有后者）。"""
+    if os.name == "nt":
+        return BASE / ".venv" / "Scripts" / "python.exe"
+    for name in ("python", "python3"):
+        p = BASE / ".venv" / "bin" / name
+        if p.exists():
+            return p
+    return BASE / ".venv" / "bin" / "python"
+
+
+VENV_PY = _venv_python()
 BOT_LOG = BASE / "bot_boot.log"
 
 
@@ -55,11 +67,21 @@ QZONE_LOG = QZONE_DIR / "qzone-bridge.log"
 NAPCAT_DIR = _sibling("NapCat", "NapCat")
 NAPCAT_LAUNCHER = NAPCAT_DIR / "launcher-user.bat"
 
-# 各组件期望的镜像名（用于二次确认，避免误杀同名端口的其它程序）
+# 端口 -> 期望的**命令行关键词**（跨平台首选判据）
+# 镜像名在各平台不一样（python / python3 / Python），在 venv 里还可能是软链，
+# 所以"这个名字对不对"远不如"命令行里有没有 bot.py"可靠。
+EXPECT_CMD = {
+    6199: ("bot.py", "launcher.py"),          # bot 主服务（反向 WS）
+    6200: ("bot.py",),                        # bot 内嵌控制台
+    5700: ("main.ts", "dist/main.js", "qzone-bridge"),
+}
+# 端口 -> 期望的工作目录末段（命令行拿不到时的次选判据）
+EXPECT_CWD = {6199: ("qqbot",), 6200: ("qqbot",), 5700: ("qzone-bridge",)}
+# 端口 -> 镜像名白名单（最后的兜底，等价于旧行为）
 EXPECT = {
-    6199: ("python", "pythonw"),      # bot 主服务（反向 WS）
-    6200: ("python", "pythonw"),      # bot 内嵌控制台
-    5700: ("node",),                  # qzone-bridge
+    6199: ("python", "python3", "Python", "pythonw"),
+    6200: ("python", "python3", "Python", "pythonw"),
+    5700: ("node", "nodejs"),
 }
 
 
@@ -97,26 +119,119 @@ def _run(args, **kw):
                           creationflags=no_window(), **kw)
 
 
+def _psutil():
+    """有 psutil 就用它（三平台一套 API，还能直接读 cmdline/cwd）。
+
+    没有也完全能跑 —— 只是探测要靠平台命令，且拿不到命令行特征。**不强制依赖**。
+    """
+    try:
+        import psutil  # noqa: PLC0415
+        return psutil
+    except ImportError:
+        return None
+
+
 def port_pid(port: int) -> int | None:
-    """返回监听该端口的 PID；没有则 None。"""
-    out = _run(["netstat", "-ano"]).stdout or ""
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 5 or parts[-1] == "":
-            continue
-        if "LISTENING" not in line:
-            continue
-        local = parts[1]
-        if local.endswith(":" + str(port)):
+    """返回监听该端口的 PID；拿不到就 None。
+
+    顺序：psutil → 平台命令（Windows netstat / Linux ss / macOS lsof）→ None。
+    **拿不到 PID 时上层必须退化成"只认有人在监听"，绝不能盲杀。**
+    """
+    ps = _psutil()
+    if ps is not None:
+        try:
+            for conn in ps.net_connections(kind="inet"):
+                if not conn.laddr or conn.laddr.port != int(port):
+                    continue
+                if getattr(conn, "status", "") in ("LISTEN", "LISTENING") or conn.pid:
+                    if conn.pid:
+                        return int(conn.pid)
+        except Exception:  # noqa: BLE001  权限不足 / 平台差异，退回命令行
+            pass
+
+    if os.name == "nt":
+        out = _run(["netstat", "-ano"]).stdout or ""
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 5 or "LISTENING" not in line:
+                continue
+            if parts[1].endswith(":" + str(port)):
+                try:
+                    return int(parts[-1])
+                except ValueError:
+                    continue
+        return None
+
+    if sys.platform == "darwin":
+        out = _run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"]).stdout or ""
+        for line in out.splitlines():
             try:
-                return int(parts[-1])
+                return int(line.strip())
             except ValueError:
                 continue
+        return None
+
+    # Linux：ss 优先，没有就退 /proc
+    out = _run(["ss", "-ltnpH", f"sport = :{port}"]).stdout or ""
+    marker = "pid="
+    for line in out.splitlines():
+        idx = line.find(marker)
+        if idx < 0:
+            continue
+        rest = line[idx + len(marker):]
+        num = ""
+        for ch in rest:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if num:
+            return int(num)
     return None
 
 
-def image_name(pid: int) -> str:
-    """取进程镜像名（不含 .exe），失败返回空串。
+def proc_info(pid: int) -> dict:
+    """取进程的 {name, cmdline, cwd}，拿不到就返回空 dict。
+
+    `cmdline` 是跨平台判断"这个端口是不是我的进程"的**唯一可靠依据** ——
+    镜像名在三平台各不相同（python / python3 / Python），而且在 venv 里还可能是软链。
+    """
+    if not pid:
+        return {}
+    ps = _psutil()
+    if ps is not None:
+        try:
+            p = ps.Process(pid)
+            return {"name": (p.name() or "").lower(),
+                    "cmdline": " ".join(p.cmdline() or []),
+                    "cwd": (p.cwd() or "")}
+        except Exception:  # noqa: BLE001
+            pass
+    if os.name == "nt":
+        # ⚠️ 这里**不能**调 image_name()：那个函数是 proc_info() 的包装，
+        #    会变成无限递归（踩过）。
+        return {"name": _win_image_name(pid)}
+    try:
+        if sys.platform == "darwin":
+            name = (_run(["ps", "-p", str(pid), "-o", "comm="]).stdout or "").strip()
+            cmd = (_run(["ps", "-p", str(pid), "-o", "command="]).stdout or "").strip()
+            return {"name": Path(name).name.lower() if name else "", "cmdline": cmd}
+        base = Path(f"/proc/{pid}")
+        name = (base / "comm").read_text(encoding="utf-8", errors="replace").strip().lower()
+        raw = (base / "cmdline").read_bytes().split(b"\x00")
+        cmd = " ".join(x.decode("utf-8", "replace") for x in raw if x)
+        cwd = ""
+        try:
+            cwd = str((base / "cwd").resolve())
+        except OSError:
+            pass
+        return {"name": name, "cmdline": cmd, "cwd": cwd}
+    except OSError:
+        return {}
+
+
+def _win_image_name(pid: int) -> str:
+    """Windows：用 tasklist 取镜像名（不含 .exe）。
 
     tasklist 的 CSV 形如：\"python.exe\",\"47796\",\"Console\",\"1\",\"43,656 K\"
     第二列是 PID —— 名字只在第一列。注意内存那列本身含逗号，所以不要按整行切。
@@ -129,25 +244,96 @@ def image_name(pid: int) -> str:
     return ""
 
 
+def image_name(pid: int) -> str:
+    """进程镜像名（不含 .exe）。拿不到返回空串。"""
+    return str(proc_info(pid).get("name") or "")
+
+
 def is_up(port: int) -> bool:
-    return port_pid(port) is not None
+    """端口有没有人在监听。
+
+    ★ 这是**最终兜底**：即使拿不到 PID（权限不足 / 没有 ss / 没有 psutil），
+      也必须能回答"这个端口是不是被占着"。纯 socket 探活，三平台一致。
+    """
+    if port_pid(port) is not None:
+        return True
+    import socket  # noqa: PLC0415
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.6):
+            return True
+    except OSError:
+        return False
+
+
+def owns_port(port: int) -> tuple[int | None, str]:
+    """这个端口是不是被**我们自己的进程**占着。返回 (pid, 说明)。
+
+    判定顺序（越靠前越可靠）：
+      1. 命令行特征：cmdline 里出现了 EXPECT_CMD[port] 里的任一关键词；
+      2. 工作目录特征：cwd 末段落在 EXPECT_CWD[port] 里；
+      3. 镜像名兜底：旧行为（python / pythonw / node）。
+
+    🔴 拿不到 PID 时返回 (None, 说明)，调用方**绝不能 kill** ——
+       这条保护的是"绝不误杀 QQ"。
+    """
+    pid = port_pid(port)
+    if pid is None:
+        if is_up(port):
+            return None, f"端口被占用，但拿不到 PID（没 psutil / 没权限）"
+        return None, "未监听"
+    info = proc_info(pid)
+    cmd = str(info.get("cmdline") or "")
+    cwd = str(info.get("cwd") or "")
+    name = str(info.get("name") or "")
+
+    for want in EXPECT_CMD.get(port, ()):
+        if want and want in cmd:
+            return pid, f"{name or '进程'}(PID {pid}，命令行匹配 {want!r})"
+    for want in EXPECT_CWD.get(port, ()):
+        if want and Path(cwd).name == want:
+            return pid, f"{name or '进程'}(PID {pid}，工作目录 {want})"
+    allow = EXPECT.get(port, ())
+    if allow and name and name not in allow:
+        return pid, f"被 {name}(PID {pid}) 占用 —— 不是预期程序，不动它"
+    if name:
+        return pid, f"{name}(PID {pid})"
+    return pid, f"PID {pid}（拿不到进程名）"
 
 
 def owned_by(port: int) -> tuple[int | None, str]:
-    """确认端口被期望的程序占用。返回 (pid, 说明)。"""
-    pid = port_pid(port)
-    if pid is None:
-        return None, "未监听"
-    name = image_name(pid)
-    allow = EXPECT.get(port, ())
-    if allow and name and name not in allow:
-        return pid, f"被 {name}.exe(PID {pid}) 占用 —— 不是预期程序，不动它"
-    return pid, f"{name}.exe(PID {pid})"
+    """旧名字，保留给既有调用点。语义同 owns_port。"""
+    return owns_port(port)
 
 
-def kill_pid(pid: int) -> bool:
-    r = _run(["taskkill", "/F", "/PID", str(pid)])
-    return r.returncode == 0
+def kill_pid(pid: int, *, expect_port: int | None = None) -> bool:
+    """结束进程。**kill 前会再核对一次身份**，防 PID 复用（TOCTOU）。
+
+    `port_pid()` 拿到 PID 到这个函数执行之间，目标进程可能已经退出、PID 被系统
+    分配给别的程序 —— 不复核就会杀掉一个无辜的进程。
+    """
+    if not pid:
+        return False
+    if expect_port is not None:
+        who, why = owns_port(expect_port)
+        if who != pid or "不是预期程序" in why:
+            log(f"拒绝结束 PID {pid}：复核时端口 {expect_port} 的归属已变（{why}）")
+            return False
+    if os.name == "nt":
+        return _run(["taskkill", "/F", "/PID", str(pid)]).returncode == 0
+    import signal  # noqa: PLC0415
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except OSError:
+        return False
+    for _ in range(10):
+        time.sleep(0.5)
+        if not proc_info(pid):
+            return True
+    try:
+        os.kill(int(pid), signal.SIGKILL)
+    except OSError:
+        return False
+    return True
 
 
 def log(msg: str) -> None:
@@ -170,11 +356,29 @@ def ui_warn(title: str, text: str) -> None:
     """
     if sys.stdout is not None:
         return
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)  # MB_ICONWARNING
-    except Exception:
-        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)  # MB_ICONWARNING
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    elif sys.platform == "darwin":
+        try:
+            script = f'display notification {json.dumps(text)} with title {json.dumps(title)}'
+            subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            subprocess.run(["notify-send", title, text], capture_output=True, timeout=5)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    # 三个平台都弹不出来（无 GUI 服务器）：至少别让它静默消失
+    sys.stderr.write(f"\n[{title}] {text}\n")
+    log(f"[提示] {title}：{text.splitlines()[0] if text else ''}")
 
 
 # ──────────────────────────────────────────────
@@ -187,23 +391,17 @@ _lock_held = False
 
 
 def acquire_launcher_lock() -> bool:
+    """拿启动器单实例锁。跨平台（Windows msvcrt / POSIX flock），见 filelock.py。
+
+    以前非 Windows 直接 `return True` —— 等于**静默没有保护**，两个启动器
+    可以同时跑并互相抢着重启。现在两边语义一致。
+    """
     global _lock_fh
-    try:
-        import msvcrt
-    except ImportError:
-        return True
-    STATE.mkdir(parents=True, exist_ok=True)
-    fh = open(LAUNCH_LOCK, "a+", encoding="utf-8")
-    try:
-        fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
-        fh.close()
+    import filelock  # noqa: PLC0415  同目录模块
+    fh, holder = filelock.acquire(LAUNCH_LOCK)
+    if fh is None:
+        log(f"已有启动器在跑（PID {holder or '?'}），本次不再动手")
         return False
-    fh.seek(0)
-    fh.write(f"{os.getpid()}\n")
-    fh.truncate()
-    fh.flush()
     _lock_fh = fh
     return True
 
@@ -219,7 +417,11 @@ def _spawn(args, cwd: Path, logfile: Path):
     fh.flush()
     return subprocess.Popen(
         args, cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, creationflags=no_window(), close_fds=True,
+        stdin=subprocess.DEVNULL, creationflags=no_window(),
+        # POSIX 上加 start_new_session 等价 setsid：脱离当前终端，
+        # 关掉终端 / SSH 断开都不会把 bot 一起带走
+        start_new_session=(os.name != "nt"),
+        close_fds=True,
     )
 
 
@@ -239,11 +441,19 @@ def start_qzone() -> bool:
     if node is None:
         log("找不到 node.exe，跳过空间桥接")
         return False
+    # 优先跑构建产物：省掉 tsx 这个运行时依赖，Linux 上按 systemd 模板部署时
+    # 通常只有 dist/（没有 devDependencies）。都没有才提示去 build。
+    dist_main = QZONE_DIR / "dist" / "main.js"
     tsx = QZONE_DIR / "node_modules" / "tsx" / "dist" / "cli.mjs"
-    if not tsx.exists():
-        log(f"找不到 tsx：{tsx}，跳过空间桥接")
+    src_main = QZONE_DIR / "src" / "main.ts"
+    if dist_main.exists():
+        _spawn([str(node), str(dist_main)], QZONE_DIR, QZONE_LOG)
+    elif tsx.exists() and src_main.exists():
+        _spawn([str(node), str(tsx), "src/main.ts"], QZONE_DIR, QZONE_LOG)
+    else:
+        log(f"空间桥接既没有 dist/main.js 也没有 tsx+src，跳过"
+            f"（先在 {QZONE_DIR} 里 npm install && npm run build）")
         return False
-    _spawn([str(node), str(tsx), "src/main.ts"], QZONE_DIR, QZONE_LOG)
     log(f"已启动空间桥接（5700），日志 -> {QZONE_LOG}")
     return True
 
@@ -253,9 +463,14 @@ def start_bot() -> bool:
     if pid:
         log(f"bot 已在运行（6199：{why}），跳过")
         return True
-    # 用 pythonw.exe 起：彻底没有控制台（日志本来就落 bot.log）
-    pyw = VENV_PY.with_name("pythonw.exe")
-    exe = pyw if pyw.exists() else VENV_PY
+    # Windows：用 pythonw.exe 起，彻底没有控制台（日志本来就落 bot.log）
+    # POSIX：没有 pythonw 这种东西，"无窗口"等于"不占终端" —— 靠 _spawn 里的
+    #        start_new_session=True（等价 setsid）实现，所以直接用 venv 里的 python。
+    if os.name == "nt":
+        pyw = VENV_PY.with_name("pythonw.exe")
+        exe = pyw if pyw.exists() else VENV_PY
+    else:
+        exe = VENV_PY
     _spawn([str(exe), "bot.py"], BASE, BOT_LOG)
     log(f"已启动 bot（6199 + 6200），启动器日志 -> {BOT_LOG}")
     return True
@@ -346,13 +561,31 @@ def qq_process_count() -> int:
 
 
 def start_napcat() -> bool:
-    """只在 NapCat 确实没接上时才启动它；**永不杀 QQ**。
+    """只在本平台的接入端确实没接上时才启动它；**永不杀 QQ**。
 
     两道闸门，防止重复注入出多个 QQ 实例（踩过：变成 8 个 QQ 进程）：
       1. bot 已经报 ws_connected → 直接跳过
       2. 已经有 QQ.exe 在跑（但还没连上）→ 也不再注入，
          而是提示用户去那个 QQ 窗口完成登录
     """
+    # 先问「本平台该用哪个接入端」。这一层让"QQ 接入端"不再是 NapCat 专属：
+    # 换成 Lagrange 之类时，这里只负责提示怎么对接，不代它启动。
+    import onebot  # noqa: PLC0415  同目录模块
+    want = str((CFG.get("onebot") or {}).get("adapter") or "auto").strip().lower()
+    spec = onebot.pick_adapter(CFG, BASE.parent)
+    if spec is None:
+        if want == "none":
+            log("接入端由你自己管（onebot.adapter=none），启动器不碰它。")
+        else:
+            log("没探测到可用的 QQ 接入端，跳过启动。")
+        log("  " + onebot.connect_hint(CFG))
+        return True
+    if spec.key != "napcat":
+        log(f"当前接入端是「{spec.label}」，本启动器不代为启动它。")
+        for line in onebot.credential_hint(spec, CFG).splitlines():
+            log("  " + line)
+        return True
+
     if napcat_connected():
         log("NapCat 已连接（bot 侧有活的 WS），跳过")
         return True
@@ -367,6 +600,15 @@ def start_napcat() -> bool:
                 f"1. 看一下 QQ 窗口，是否停在登录界面？登录机器人号 {bot_qq() or '（见 config.json 的 bot_qq）'}\n"
                 "2. 如果不确定，先把所有 QQ 窗口关干净，再双击 启动.pyw\n\n"
                 "控制台：http://127.0.0.1:6200/")
+        return False
+
+    if os.name != "nt":
+        log("QQ 接入端：NapCat 是 Windows 注入式的，当前系统上跑不了。")
+        log("  请自备 OneBot v11 实现（Linux/macOS 常见做法：NapCat 的 Docker 镜像，"
+            "或 Lagrange.Core / LLOneBot），让它反向连到 "
+            f"ws://{CFG.get('ws_host', '127.0.0.1')}:{CFG.get('ws_port', 6199)}/ws，"
+            "token 与本配置的 access_token 保持一致。")
+        log("  详见 docs/部署-Linux.md 的「QQ 接入端」一节。")
         return False
 
     boot = NAPCAT_DIR / "NapCatWinBootMain.exe"
@@ -521,7 +763,15 @@ def open_console() -> bool:
         log(f"控制台（{port}）还没在监听，先不打开；请先跑一次启动")
         return False
     try:
-        os.startfile(url)          # Windows 原生，直接用默认浏览器
+        # webbrowser 三平台通用；Windows 上 os.startfile 更"原生"所以先试它
+        if os.name == "nt":
+            os.startfile(url)
+        else:
+            import webbrowser
+            if not webbrowser.open(url):
+                raise RuntimeError("没有可用的浏览器")
+    except Exception:
+        log(f"控制台地址（请手动打开）：{url}")          # Windows 原生，直接用默认浏览器
         log(f"已在浏览器打开控制台：http://127.0.0.1:{port}/")
         return True
     except Exception as exc:

@@ -1,0 +1,54 @@
+name: 功能建议
+description: 想要一个新功能或改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先看一下这几个可能已经覆盖了：
+
+        - 换模型厂商 / 加端点 → `docs/providers.md`
+        - 生图后端 → `docs/生图.md`
+        - 配置项含义 → `docs/配置说明.md`
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 说场景，别说方案 —— 场景能帮我找到更合适的做法。
+      placeholder: |
+        我在小主机上跑，显存不够开 SD，但偶尔又想让她画一张...
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你设想的做法（可选）
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及哪一块
+      options:
+        - 模型接入（providers）
+        - 生图（imagegen）
+        - 人设 / 对话行为
+        - 记忆 / 好感 / 作息
+        - 控制台
+        - 部署 / 跨平台
+        - 文档
+        - 其它
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: 你愿意提 PR 吗
+      options:
+        - label: 愿意（我会先看 CONTRIBUTING.md）
+          required: false

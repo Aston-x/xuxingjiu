@@ -1,0 +1,100 @@
+{
+  "manifest_version": 1,
+  "_readme": [
+    "云端生图后端的**能力声明**（真正发请求的适配器在 imagegen/adapters/ 下）。",
+    "云端与本地最大的差别是「尺寸只认少数固定档」和「有内容审核」，",
+    "所以 presets / negative / moderation 这三个字段一定要写准 ——",
+    "写错了不是画得难看，是直接 400。",
+    "本文档不预置任何密钥；api_key 一律走 api_key_env。",
+    "标「未实测」的后端，probe() 会自报 unsupported，请以官方文档为准。"
+  ],
+  "providers": [
+    {
+      "name": "openai_images",
+      "display_name": "OpenAI Images（gpt-image / DALL·E）",
+      "capabilities": {
+        "free_size": false,
+        "presets": [[1024, 1024], [1024, 1536], [1536, 1024]],
+        "negative": false,
+        "hires": false,
+        "returns": "b64",
+        "formats": ["png"],
+        "max_prompt_chars": 32000,
+        "seed": false,
+        "moderation": true,
+        "note": "尺寸只能从三个预设里选；不支持负面提示词；有内容审核"
+      },
+      "_note": "base_url = https://api.openai.com/v1；endpoint.model 例如 gpt-image-1 或 dall-e-3；返回默认 b64_json，也可用 url"
+    },
+    {
+      "name": "dashscope",
+      "display_name": "通义万相（DashScope）",
+      "capabilities": {
+        "free_size": false,
+        "presets": [[1024, 1024], [1280, 720], [720, 1280], [1440, 810], [810, 1440]],
+        "negative": true,
+        "hires": false,
+        "returns": "url",
+        "formats": ["png", "jpg"],
+        "max_prompt_chars": 800,
+        "seed": true,
+        "moderation": true,
+        "multi_hop": true,
+        "note": "异步任务：先 POST 拿 task_id，再轮询 /api/v1/tasks/{id}；返回的是图片 URL，需要再下载一次"
+      },
+      "_note": "base_url = https://dashscope.aliyuncs.com；endpoint.model 例如 wanx2.1-t2i-turbo"
+    },
+    {
+      "name": "cogview",
+      "display_name": "智谱 CogView",
+      "capabilities": {
+        "free_size": false,
+        "presets": [[1024, 1024], [768, 1344], [1344, 768], [1440, 720], [720, 1440]],
+        "negative": false,
+        "hires": false,
+        "returns": "url",
+        "formats": ["png"],
+        "max_prompt_chars": 1000,
+        "seed": true,
+        "moderation": true,
+        "note": "CogView-4 不支持负面提示词（传了会被拒）"
+      },
+      "_note": "base_url = https://open.bigmodel.cn/api/paas/v4；endpoint.model 例如 cogview-4"
+    },
+    {
+      "name": "siliconflow_image",
+      "display_name": "硅基流动（生图）",
+      "capabilities": {
+        "free_size": false,
+        "presets": [[1024, 1024], [768, 1024], [1024, 768], [768, 1344], [1344, 768]],
+        "negative": true,
+        "hires": false,
+        "returns": "url",
+        "formats": ["png"],
+        "max_prompt_chars": 1500,
+        "seed": true,
+        "moderation": true,
+        "note": "聚合多家的生图模型（含 SDXL、Flux 等），能力随模型而变"
+      },
+      "_note": "base_url = https://api.siliconflow.cn/v1；endpoint.model 例如 stabilityai/stable-diffusion-xl-base-1.0"
+    },
+    {
+      "name": "gemini_image",
+      "display_name": "Google Gemini（Imagen）",
+      "capabilities": {
+        "free_size": false,
+        "presets": [[1024, 1024], [896, 1152], [1152, 896], [1344, 768], [768, 1344]],
+        "negative": false,
+        "hires": false,
+        "returns": "b64",
+        "formats": ["png"],
+        "max_prompt_chars": 4000,
+        "seed": false,
+        "moderation": true,
+        "multi_hop": false,
+        "note": "走 generateContent 的多模态出图；key 用 x-goog-api-key 头传（不要塞 URL，会被面板/日志带出来）"
+      },
+      "_note": "base_url = https://generativelanguage.googleapis.com/v1beta；endpoint.model 例如 imagen-4.0-generate-001"
+    }
+  ]
+}

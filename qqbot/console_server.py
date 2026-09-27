@@ -483,6 +483,7 @@ WRITE_OPS = frozenset({
     "switch_set",          # 切一个功能开关（CONSOLE_SWITCHES 里的布尔项）
     "list_set",            # 写一个话术 / 列表（CONSOLE_LISTS 里的一项，按上限校验）
     "vision_set",          # 切换识图后端（auto / cloud / local / off）
+    "provider_reload",     # 重载模型 / 生图端点（重读磁盘 + 重建端点，不改磁盘）
 })
 
 # /api/bot/sticker 上允许的"前端操作名" -> 实际交给 bot 执行的 op
@@ -826,6 +827,8 @@ class Handler(BaseHTTPRequestHandler):
         "cross-group": ("cross_group", None),
         # 识图：当前后端 / 云端与本地可用性 / 本地探测 / 识图计数（只读）
         "vision": ("vision", None),
+        # 模型与生图端点（只读）：两套 Router 的状态合并视图，不含明文密钥
+        "providers": ("providers", None),
         # 功能开关清单：按分组列出的布尔项（配合 switch_set 写）
         "switches": ("switches", None),
         # 话术与列表：按分组列出的多行文本项（配合 list_set 写）

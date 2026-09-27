@@ -1,0 +1,75 @@
+{
+  "manifest_version": 1,
+  "_readme": [
+    "本地生图后端的**能力声明**。生图没法像对话模型那样纯声明式驱动（多跳、轮询、工作流注入），",
+    "所以这里只声明「这个后端支持什么」，真正的请求构造在 imagegen/adapters/*.py 里。",
+    "端点里写 capabilities（或 image）可以逐端点覆盖下面的默认值。"
+  ],
+  "providers": [
+    {
+      "name": "sd_webui",
+      "display_name": "Stable Diffusion WebUI（本地）",
+      "capabilities": {
+        "free_size": true,
+        "size_step": 8,
+        "negative": true,
+        "hires": true,
+        "returns": "b64",
+        "formats": ["png"],
+        "max_prompt_chars": 4000,
+        "seed": true,
+        "moderation": false,
+        "note": "需带 --api 启动；本项目实测过的唯一本地后端"
+      },
+      "_note": "base_url 例如 http://127.0.0.1:7860，端点 tier 写 local（会强制绕过 HTTP_PROXY）"
+    },
+    {
+      "name": "comfyui",
+      "display_name": "ComfyUI（本地）",
+      "capabilities": {
+        "free_size": true,
+        "size_step": 8,
+        "negative": true,
+        "hires": false,
+        "returns": "b64",
+        "formats": ["png"],
+        "max_prompt_chars": 4000,
+        "seed": true,
+        "multi_hop": true,
+        "note": "走「提交工作流 → 轮询 history → 取图」三跳；工作流模板见 imagegen/workflows/"
+      },
+      "_note": "base_url 例如 http://127.0.0.1:8188，端点 tier 写 local"
+    },
+    {
+      "name": "sd_next",
+      "display_name": "SD.Next（本地）",
+      "capabilities": {
+        "free_size": true,
+        "size_step": 8,
+        "negative": true,
+        "hires": true,
+        "returns": "b64",
+        "formats": ["png"],
+        "seed": true,
+        "note": "接口与 A1111 基本兼容；未实测"
+      },
+      "_note": "base_url 例如 http://127.0.0.1:7860；本适配器复用 sd_webui 的接口形状"
+    },
+    {
+      "name": "invokeai",
+      "display_name": "InvokeAI（本地）",
+      "capabilities": {
+        "free_size": true,
+        "size_step": 8,
+        "negative": true,
+        "hires": false,
+        "returns": "b64",
+        "formats": ["png"],
+        "seed": true,
+        "multi_hop": true,
+        "note": "接口各版本差异大，本版只支持固定 graph 模板这一条路径；其余组合 probe 会自报 unsupported"
+      },
+      "_note": "base_url 例如 http://127.0.0.1:9090"
+    }
+  ]
+}
