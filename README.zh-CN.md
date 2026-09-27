@@ -147,8 +147,6 @@ export DEEPSEEK_API_KEY=sk-xxxx
 | [docs/常见坑.md](docs/常见坑.md) | 实际踩过的坑，以及成因 |
 | [docs/生图.md](docs/生图.md) | 生图后端怎么选、怎么配 |
 | [docs/providers.md](docs/providers.md) | 模型接入层的细节 |
-| [docs/开源指南.md](docs/开源指南.md) | 这个项目怎么发出去 |
-| [docs/GitHub-开源教程.md](docs/GitHub-开源教程.md) | 同样的流程，不挑项目 |
 | [qzone-bridge/doc/](qzone-bridge/doc/README.md) | QQ 空间接口笔记与逆向流程 |
 
 ## 测试

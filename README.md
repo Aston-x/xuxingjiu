@@ -161,8 +161,6 @@ Everything below is written in Chinese.
 | [docs/常见坑.md](docs/常见坑.md) | The failures we actually hit, and their causes |
 | [docs/生图.md](docs/生图.md) | Image generation backends |
 | [docs/providers.md](docs/providers.md) | The model layer in depth |
-| [docs/开源指南.md](docs/开源指南.md) | Publishing this project specifically |
-| [docs/GitHub-开源教程.md](docs/GitHub-开源教程.md) | The same thing for any project |
 | [qzone-bridge/doc/](qzone-bridge/doc/README.md) | QZone API notes and the reverse-engineering workflow |
 
 ## Tests
