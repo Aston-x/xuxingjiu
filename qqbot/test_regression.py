@@ -3284,8 +3284,13 @@ async def main():
         _lc36._run = _real_run36
 
     # 命令特征判归属：cmdline 命中就算自己的进程（跨平台唯一可靠依据）
+    # port_pid 也要一起桩掉：owns_port 会先查端口有没有人占，拿不到 PID 就直接返回
+    # 「未监听」。不桩的话这两个断言只在「本机恰好有 NapCat 占着 6199」时成立 ——
+    # 开发机上是绿的，CI 上必红（runner 上没那个进程）。
     _real_info36 = _lc36.proc_info
+    _real_pid36 = _lc36.port_pid
     try:
+        _lc36.port_pid = lambda port: 4242
         _lc36.proc_info = lambda pid: {"name": "python3",
                                        "cmdline": "/x/.venv/bin/python launcher.py start",
                                        "cwd": "/x/qqbot"}
@@ -3298,6 +3303,7 @@ async def main():
         check("别人的程序会被明确标出「不是预期程序」", "不是预期程序" in _why2, _why2)
     finally:
         _lc36.proc_info = _real_info36
+        _lc36.port_pid = _real_pid36
 
     check("EXPECT_CMD 已按命令行特征配置", "bot.py" in _lc36.EXPECT_CMD[6199],
           str(_lc36.EXPECT_CMD))
