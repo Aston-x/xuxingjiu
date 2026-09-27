@@ -3657,6 +3657,98 @@ class LinkReader:
 LINKS = LinkReader()
 
 
+# ── 跨会话聊天记录 ────────────────────────────────────────────────────
+CHATLOG_TAG = re.compile(r"\[记录[:：]?([^\]]*)\]")
+
+
+class ChatLog:
+    """所有会话合并在一起的最近消息流水（群 + 私聊）。
+
+    为什么要合并：她的上下文是**按会话分桶**的（群 g<群号> / 私聊 p<QQ号>），
+    在 A 群聊过的东西，B 群和私聊里根本看不见 —— 于是"你俩刚才在那边说的那个"
+    她完全接不上。这里留一份跨会话的流水，她想翻就翻（[记录:关键词]），
+    管理员也能直接查（/记录）。
+
+    ⚠️ 它**绝不自动进提示词**：跨群内容自动注入等于把 A 群的话泄漏到 B 群，
+    而且每轮都要烧 token。只在显式翻的时候取一小段。
+    """
+
+    def __init__(self) -> None:
+        cfg = CFG.get("chatlog", {})
+        self.enable = bool(cfg.get("enable", True))
+        self.max_entries = int(cfg.get("max_entries", 500))
+        self.path = BASE / str(cfg.get("path", "chat_log.json"))
+        self.rows: list[dict] = []
+        self._last_save = 0.0
+        self.load()
+
+    def load(self) -> None:
+        try:
+            d = json.loads(self.path.read_text(encoding="utf-8"))
+            rows = d.get("rows") if isinstance(d, dict) else d
+            self.rows = [r for r in (rows or []) if isinstance(r, dict)][-self.max_entries:]
+        except Exception:
+            self.rows = []
+
+    def save(self) -> None:
+        write_json_dict(self.path, {
+            "_说明": "跨会话合并的聊天流水（群 + 私聊）。她翻记录、管理员 /记录 都读它；"
+                     f"只留最近 {self.max_entries} 条，重启不丢。",
+            "rows": self.rows[-self.max_entries:],
+        }, "聊天流水")
+
+    def record(self, key: str, who: str, text: str, side: str = "user") -> None:
+        """记一条。最坏每 30 秒落一次盘 —— 每句都写盘太费，丢了尾巴也不可惜。"""
+        if not self.enable or not str(text or "").strip():
+            return
+        self.rows.append({"ts": time.time(), "key": str(key or ""), "who": str(who or ""),
+                          "side": str(side), "text": str(text).strip()[:400]})
+        if len(self.rows) > self.max_entries:
+            del self.rows[:len(self.rows) - self.max_entries]
+        now = time.time()
+        if now - self._last_save > 30:
+            self._last_save = now
+            self.save()
+
+    @staticmethod
+    def label(key: str) -> str:
+        """会话键 → 人看得懂的名字。群名会变，所以渲染时才查，不在写入时定死。
+
+        群名册里没名字的群，`GROUPS.label()` 只给群号，这里补一个「群」字 ——
+        「999」和某个人的 QQ 号长得一样，分不清是群还是私聊。
+        """
+        k = str(key or "")
+        if k.startswith("g"):
+            lab = GROUPS.label(k[1:])
+            return f"群{lab}" if lab == k[1:] else lab
+        if k.startswith("p"):
+            return f"私聊{k[1:]}"
+        return k or "（无会话）"
+
+    def find(self, kw: str = "", limit: int = 40) -> list[dict]:
+        """翻记录。关键词按"任一个字命中"算 —— 中文不做分词，比精确匹配好使得多；
+        空关键词就是"最近的若干条"。"""
+        rows = self.rows
+        if str(kw or "").strip():
+            chars = [c for c in str(kw).strip() if not c.isspace()]
+            rows = [r for r in rows if any(c in str(r.get("text") or "") for c in chars)]
+        return rows[-max(1, int(limit)):]
+
+    def render(self, kw: str = "", limit: int = 40) -> str:
+        out = []
+        for r in self.find(kw, limit):
+            try:
+                when = datetime.fromtimestamp(float(r.get("ts") or 0)).strftime("%m-%d %H:%M")
+            except Exception:
+                when = "??"
+            who = "她" if str(r.get("side")) == "assistant" else (str(r.get("who") or "") or "某人")
+            out.append(f"[{when}] {self.label(str(r.get('key') or ''))} {who}：{r.get('text')}")
+        return "\n".join(out)
+
+
+CHATLOG = ChatLog()
+
+
 # ══════════════════════ 识图：引擎选择 ══════════════════════
 #
 # 以前"能不能看图"只有一个 vision_relay 开关，云端永远只吃本地 7B 的转述 ——
@@ -6045,6 +6137,11 @@ def build_system(is_group: bool, life: dict | None = None, group_id=None,
         scope = f"你主要逛 {'、'.join(sites)}" if sites else "你能上网"
         parts.append(f"（{scope}。想知道什么就写 [搜索:关键词]，查完结果会给你，"
                      "回答时别露出查过的痕迹。）")
+    if CHATLOG.enable and feat_ok("chatlog", speaker_id) and not json_only:
+        parts.append("（你记得的不只是这一段对话：写 [记录:关键词] 就能翻到**你自己**"
+                     "在别处聊过的东西 —— 群里、私聊里都算，关键词留空就是翻最近的。\n"
+                     "想接上他提过的事、想确认「是不是他说的」，都可以翻一眼；"
+                     "翻完直接把结果说给他，别提你翻了记录。）")
     if CFG.get("qzone", {}).get("enable", True) and not json_only:
         # 受限功能对非管理员直接不下发说明，她压根不知道有这回事（装糊涂）
         bits = []
@@ -6684,6 +6781,16 @@ async def handle_message(ev: dict) -> None:
             lambda m: send(is_group, group_id, user_id, message_id, m)):
         return
 
+    # 管理员查跨会话的聊天流水（她自己在别处聊过什么，合并在一起看）
+    if text.strip().startswith("/记录"):
+        if not allowed("chatlog", user_id):
+            return  # 同上：装糊涂
+        _kw43 = text.strip()[len("/记录"):].strip()
+        _got43 = CHATLOG.render(_kw43, 30)
+        await send(is_group, group_id, user_id, message_id, _got43 or (
+            f"没翻到跟「{_kw43}」有关的记录。" if _kw43 else "还没有记录。"))
+        return
+
     # 手动让她现在去 b 站逛一圈（管理员）
     if text.strip() in ("/bili", "/b站", "/刷b站"):
         if not allowed("bili_login", user_id):
@@ -6837,6 +6944,9 @@ async def handle_message(ev: dict) -> None:
 
     # 私聊也带上 QQ 号：抽长期记忆时要靠它认人（记忆是按 QQ 号存的）
     shown = f"{nickname}({user_id})：{text or _media_note(images, mfaces)}"
+    # 跨会话流水：她的上下文是按会话分桶的，别处聊过什么她看不见 —— 这里留一份。
+    # 只在显式翻（[记录:…] / 管理员 /记录）时取用，平时绝不进提示词（跨群泄漏）。
+    CHATLOG.record(key, nickname, text or _media_note(images, mfaces))
     history = CHAT.history(key)
     # 动画表情（mface）也是一张图：把它的公开地址并进同一条识图链路，
     # 否则"发了张动图她完全没反应"（以前 mface 压根不进 images）
@@ -6959,6 +7069,10 @@ async def handle_message(ev: dict) -> None:
         reply = await resolve_web(key, messages, reply)
         reply = clean_reply(reply)
         reply = drop_tags(reply, WEB_TAG)
+    if CHATLOG_TAG.search(reply):
+        reply = await resolve_chatlog(key, messages, reply)
+        reply = clean_reply(reply)
+        reply = drop_tags(reply, CHATLOG_TAG)
     # 受限功能：非管理员触发的标记直接抹掉、不执行，她那边也不会承认有这功能
     def _deny(tag, feature: str, why: str) -> None:
         nonlocal reply
@@ -6970,6 +7084,7 @@ async def handle_message(ev: dict) -> None:
     want_draw = bool(DRAW_TAG.search(reply))
 
     _deny(WEB_TAG, "search", "联网搜索")
+    _deny(CHATLOG_TAG, "chatlog", "翻聊天记录")
     _deny(LIKE_TAG, "qzone_like", "点赞")
     _deny(QZONE_READ_TAG, "qzone_read", "看空间")
     _deny(QZONE_TAG, "qzone_post", "发说说")
@@ -7063,6 +7178,7 @@ async def handle_message(ev: dict) -> None:
                 key, time.time() - t0, source, bool(sticker_path), bool(quote_id),
                 _ban_done or "-", ban_notes or "-")
     await send(is_group, group_id, user_id, quote_id, reply, sticker_path, chat_image)
+    CHATLOG.record(key, her_name(key), reply or "(发了张图)", "assistant")
 
 
 async def _send_one(is_group: bool, group_id, user_id, message_id, text: str,
@@ -7248,6 +7364,35 @@ async def resolve_web(key: str, messages: list, reply: str) -> str:
         new, _ = await CHAT.answer(key, extra)
     except Exception as exc:
         logger.debug("联网回答失败：%s", exc)
+        return reply
+    return new or reply
+
+
+async def resolve_chatlog(key: str, messages: list, reply: str) -> str:
+    """她想翻聊天记录（`[记录:关键词]`）就替她翻，翻完让她用自己的话再答一次。
+
+    翻的是**所有会话合并**的那份流水 —— 她在 A 群聊过的，在私聊里也能接上。
+    查不到也要给她一句话收场（不能让她把标记原样吐出去）。
+    """
+    m = CHATLOG_TAG.search(reply or "")
+    if not m or not CHATLOG.enable:
+        return reply
+    kw = m.group(1).strip()[:40]
+    got = CHATLOG.render(kw)
+    if got:
+        ask = (f"（你翻了聊天记录，{'跟「' + kw + '」有关的有这些' if kw else '最近这些'}：\n"
+               f"{got}\n\n用你自己的话回答他，别提你翻了记录、也别复述。）")
+    elif kw:
+        ask = f"（你翻了聊天记录，没有跟「{kw}」有关的。就说没找到，别提你翻了记录。）"
+    else:
+        ask = "（你翻了聊天记录，什么都没翻到。就说没找到，别提你翻了记录。）"
+    try:
+        new, _ = await CHAT.answer(key, messages + [
+            {"role": "assistant", "content": reply},
+            {"role": "user", "content": ask},
+        ])
+    except Exception as exc:
+        logger.debug("翻记录回答失败：%s", exc)
         return reply
     return new or reply
 
@@ -7521,7 +7666,7 @@ async def idle_thought(group_id) -> None:
         return
     ikey = f"g{group_id}#idle"
     reply = clean_reply(reply)
-    reply = drop_tags(reply, WEB_TAG)
+    reply = drop_tags(reply, WEB_TAG, CHATLOG_TAG)
     async def say(line: str) -> None:
         await send(True, group_id, None, None, line)
 

@@ -3650,6 +3650,47 @@ async def main():
     finally:
         _LR41.read = _real_read41
 
+    # 【42】跨会话合并的聊天流水
+    print("\n【42】跨会话聊天记录")
+    _cl42 = bot.ChatLog()
+    _cl42.path = BASE_DIR / "_tmp_chatlog42.json"
+    _cl42.rows = []
+    _cl42.record("g999", "小明", "今天下午去书店吗")
+    _cl42.record("p10001", "小红", "书店那事我也想去")
+    _cl42.record("g999", "她", "行啊", "assistant")
+    check("普通消息进流水", len(_cl42.rows) == 3, str(len(_cl42.rows)))
+    _cl42.record("g999", "小明", "   ")
+    check("空白消息不记", len(_cl42.rows) == 3)
+    check("按关键词翻得到", len(_cl42.find("书店")) == 2, str(_cl42.find("书店")))
+    check("中文按单字命中（不分词也能翻到）", len(_cl42.find("书")) == 2)
+    check("翻不到就是空", _cl42.find("外星人") == [])
+    check("关键词留空 = 翻最近的", len(_cl42.find("")) == 3)
+    _r42 = _cl42.render("书店")
+    check("渲染里带会话标签和说话人", "书店那事" in _r42 and "小红" in _r42, _r42[:110])
+    check("她说的话渲染成「她」", "她：行啊" in _cl42.render("行啊"), _cl42.render("行啊")[:80])
+    check("群 / 私聊的标签分得清",
+          "群" in _cl42.label("g999") and "私聊" in _cl42.label("p10001"),
+          f"{_cl42.label('g999')} / {_cl42.label('p10001')}")
+    _cl42.max_entries = 3
+    _cl42.record("g1000", "小刚", "第四条")
+    check("超过上限会丢最早的", len(_cl42.rows) == 3 and "今天下午去书店吗" not in
+          [r["text"] for r in _cl42.rows], str([r["text"] for r in _cl42.rows]))
+    _cl42.max_entries = 500
+    _cl42.save()
+    _cl42b = bot.ChatLog()
+    _cl42b.path = _cl42.path
+    _cl42b.load()
+    check("落盘后重读还在（重启不丢）", len(_cl42b.rows) == 3, str(len(_cl42b.rows)))
+    if _cl42.path.exists():
+        _cl42.path.unlink()
+    check("标记解析：[记录:关键词] 取出关键词",
+          bot.CHATLOG_TAG.search("[记录:天气]").group(1) == "天气"
+          and bot.CHATLOG_TAG.search("[记录:]").group(1) == "")
+    check("系统提示里告诉她能翻记录",
+          "记录:关键词" in bot.build_system(False, bot.LIFE.current(), None, ADMIN))
+    check("流水**不会**自动进提示词（防止跨群泄漏）",
+          "今天下午去书店吗" not in bot.build_system(False, bot.LIFE.current(), None, ADMIN))
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]

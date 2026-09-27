@@ -30,6 +30,8 @@ logs/
 config.json
 config.json.bak
 *.bak
+# 跨会话聊天流水（运行时产物，含群号与聊天内容，绝不进仓库）
+chat_log.json
 
 # ── 本地中间件 ──
 _patch/
