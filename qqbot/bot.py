@@ -99,7 +99,17 @@ if sys.stdout is not None:
 # 见 qqbot/persona.py。config.json 里的老键仍然**优先**（迁移期的桥），所以老安装
 # 升级上来行为一字不变；按会话/按群换人设走 persona_bindings.json。
 # 必须放在 CFG 之后：卡库要读 CFG 判 lock、做老键覆盖。
-from persona import PersonaLibrary  # noqa: E402
+from persona import (  # noqa: E402
+    ART_FIELDS,
+    PROMPT_FIELDS,
+    PROMPT_LIST_FIELDS,
+    PersonaLibrary,
+)
+
+# 迁移期那些"和角色卡重叠"的老键路径。退位时按它删 —— 全删，不是只删和卡不一样的：
+# 留着值相同的那几个，等哪天卡改了它们就会跳出来盖住新值，那是最难查的一类问题。
+PERSONA_LEGACY_PATHS = list(PROMPT_FIELDS + PROMPT_LIST_FIELDS) + \
+    [f"sd.{k}" for k in ART_FIELDS]
 
 PERSONA = PersonaLibrary(BASE, CFG)
 
@@ -133,6 +143,91 @@ def session_key(is_group: bool, group_id=None, user_id=None) -> str:
     if is_group:
         return f"g{group_id}" if group_id not in (None, "") else ""
     return f"p{user_id}" if user_id not in (None, "") else ""
+
+
+PERSONA_HELP = (
+    "/人设              看这个会话用的哪张卡、卡库里都有什么\n"
+    "/人设 换 <卡id>     这个会话换成那张卡（群聊里就是给这个群换）\n"
+    "/人设 默认          这个会话改回默认卡\n"
+    "/人设 全局 <卡id>   改默认卡（没单独设过的地方都跟着变）\n"
+    "/人设 退位          把 config.json 里还压着角色卡的老键删掉，改成以卡为准"
+)
+
+
+async def handle_persona_command(text: str, is_group: bool, group_id, user_id,
+                                 say) -> bool:
+    """人设管理命令（`/人设 …`）。返回 True = 这条被吃掉了，别再走正常回复。
+
+    ⚠️ 管理员专用：换人设等于换一个人跟你说话，不该谁都能改。
+    群聊里绑的是**这个群**（会话键 g<群号>），私聊里绑的是这段私聊 —— 同一个机制，
+    这就是"以后进多群可以按群设人设"的入口。
+    """
+    raw = (text or "").strip()
+    if not raw.startswith("/人设"):
+        return False
+    if not allowed("persona", user_id):
+        logger.info("非管理员 %s 想改人设，静默忽略", user_id)
+        return True                     # 装糊涂：不执行也不解释（和 /clear 一个态度）
+    parts = raw[len("/人设"):].strip().split()
+    sub = parts[0] if parts else ""
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    skey = session_key(is_group, group_id, user_id)
+
+    if sub in ("", "列表", "list"):
+        cur = PERSONA.resolve(skey)
+        where = "单独绑过" if PERSONA.binding_of(skey) else "默认卡"
+        lines = [f"这个会话用的是 {cur or '（一张卡都没有）'}（{where}）"]
+        if PERSONA.cards:
+            lines.append("卡库里：")
+            for cid in sorted(PERSONA.cards):
+                tags = [t for t, hit in (("默认", cid == PERSONA.default_id()),
+                                         ("当前", cid == cur)) if hit]
+                name = PERSONA.cards[cid].get("name") or cid
+                lines.append(f"  {cid} —— {name}" + (f"（{'、'.join(tags)}）" if tags else ""))
+        lines += ["", PERSONA_HELP]
+        await say("\n".join(lines))
+        return True
+
+    if sub in ("换", "换人设", "set"):
+        if not arg:
+            await say("要换成哪张卡？发 /人设 看列表。")
+            return True
+        ok, msg = PERSONA.bind(skey, arg)
+        await say(("换好了：" if ok else "没换成：") + msg
+                  + ("\n下一条回复就按新卡说话。" if ok else ""))
+        return True
+
+    if sub in ("默认", "回默认"):
+        if not PERSONA.binding_of(skey):
+            await say("这个会话本来就是默认卡。")
+            return True
+        ok, msg = PERSONA.unbind(skey)
+        await say(msg if ok else f"没改成：{msg}")
+        return True
+
+    if sub in ("全局", "默认卡"):
+        if not arg:
+            await say("要把哪张卡设成默认？发 /人设 看列表。")
+            return True
+        ok, msg = PERSONA.set_default(arg)
+        await say(msg if ok else f"没改成：{msg}")
+        return True
+
+    if sub in ("退位", "以卡为准"):
+        conflicted = {k for k, _, _ in PERSONA.conflicts()}
+        gone = drop_config(PERSONA_LEGACY_PATHS)
+        if not gone:
+            await say("config.json 里没有跟角色卡重叠的老键，本来就是以卡为准。")
+            return True
+        out = "已从 config.json 删掉这些老键，从现在起以角色卡为准：\n" + "、".join(gone)
+        if conflicted:
+            out += ("\n其中 " + "、".join(sorted(conflicted)) +
+                    " 原本和卡里的值不一样，现在以卡为准 —— 想找回旧值看 git diff。")
+        await say(out)
+        return True
+
+    await say("不认识的用法。\n" + PERSONA_HELP)
+    return True
 
 
 CQ_PATTERN = re.compile(r"\[CQ:[^\]]+\]")
@@ -6428,6 +6523,12 @@ async def handle_message(ev: dict) -> None:
         await send(is_group, group_id, user_id, message_id, "上下文已清空。")
         return
 
+    # 人设管理命令（管理员）。群聊里绑的就是这个群 —— 按群换人设从这里进。
+    if await handle_persona_command(
+            text, is_group, group_id, user_id,
+            lambda m: send(is_group, group_id, user_id, message_id, m)):
+        return
+
     # 手动让她现在去 b 站逛一圈（管理员）
     if text.strip() in ("/bili", "/b站", "/刷b站"):
         if not allowed("bili_login", user_id):
@@ -8633,6 +8734,48 @@ def update_config(patch: dict) -> dict:
     IMAGE_ROUTER.reload(CFG)
     SDGEN.reload(CFG)
     return fresh
+
+
+def drop_config(paths: list[str]) -> list[str]:
+    """从 config.json 里**删掉**几个键，返回真正删掉的。
+
+    为什么需要它：`update_config` 只能改值、删不了。而人设那几个老键必须**删**——
+    置成空串在老键判定里也算"写过"（见 persona.legacy_overrides），
+    空串照样盖住角色卡，等于没删。
+
+    写法跟 update_config 一致：重读磁盘 → 只动这几个键 → 原子写回 → 同步内存。
+    绝不拿内存里那份整体覆盖磁盘（会静默丢掉外部改过的内容）。
+    """
+    try:
+        fresh = load_config()
+    except ValueError as exc:
+        logger.warning("删配置前重读失败（%s），本次退回用内存里的版本", exc)
+        fresh = json.loads(json.dumps(CFG, ensure_ascii=False))
+    gone: list[str] = []
+    for path in paths:
+        keys = str(path).split(".")
+        node = fresh
+        hit = True
+        for k in keys[:-1]:
+            nxt = node.get(k)
+            if not isinstance(nxt, dict):
+                hit = False       # 中间那层本来就不存在，等于这个键没有
+                break
+            node = nxt
+        if hit and keys[-1] in node:
+            node.pop(keys[-1], None)
+            gone.append(path)
+    if not gone:
+        return []
+    _backup_config_roll()
+    atomic_write_json(CONFIG_PATH, fresh)
+    CFG.clear()
+    CFG.update(fresh)
+    ROUTER.reload(CFG)
+    IMAGE_ROUTER.reload(CFG)
+    SDGEN.reload(CFG)
+    logger.info("已从 config.json 删掉这些老键（从现在起以角色卡为准）：%s", gone)
+    return gone
 
 
 def _need_loop(what: str) -> None:

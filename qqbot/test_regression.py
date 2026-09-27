@@ -3482,6 +3482,81 @@ async def main():
     check("不传卡时落回默认卡的形象", _art38["character_tags"] in _pos38b)
     check("不传卡时尺寸也落回默认卡", _w38b == _art38["size"]["solo"][0], str(_w38b))
 
+    # 【39】人设命令：/人设 换/默认/全局/退位
+    print("\n【39】人设命令（/人设 …）")
+    _sh39 = __import__("shutil")
+    _tmp39 = BASE_DIR / "_tmp_persona39"
+    _sh39.rmtree(_tmp39, ignore_errors=True)
+    (_tmp39 / "personas").mkdir(parents=True)
+    _sh39.copy(BASE_DIR / "personas" / "xuxingjiu.json", _tmp39 / "personas")
+    _real_p39 = bot.PERSONA
+    _real_drop39 = bot.drop_config
+    bot.PERSONA = bot.PersonaLibrary(_tmp39, {})
+    _said39: list[str] = []
+
+    async def _say39(m):
+        _said39.append(str(m))
+
+    try:
+        bot.PERSONA.new_card("lengdan", "冷淡版")
+        check("普通消息不会被命令吃掉",
+              await bot.handle_persona_command("在吗", False, None, ADMIN, _say39) is False)
+        _said39.clear()
+        # 非管理员这一条：默认受 admin.restrict 管（config.example.json 里 persona 是限制项）。
+        # 测试里显式打开这个开关，免得依赖"测试用的 config.json 是不是从最新示例生成的"。
+        _admin39 = bot.CFG.setdefault("admin", {})
+        _restr39 = dict(_admin39.get("restrict") or {})
+        _admin39["restrict"] = dict(_restr39, persona=True)
+        try:
+            check("非管理员发 /人设 会被吃掉且不回应",
+                  await bot.handle_persona_command("/人设", True, 999, OTHER, _say39) is True
+                  and not _said39)
+        finally:
+            _admin39["restrict"] = _restr39
+        _said39.clear()
+        check("/人设 列出当前卡和卡库",
+              await bot.handle_persona_command("/人设", True, 999, ADMIN, _say39) is True
+              and "xuxingjiu" in _said39[0] and "lengdan" in _said39[0],
+              str(_said39)[:120])
+        _said39.clear()
+        await bot.handle_persona_command("/人设 换 没有这张", True, 999, ADMIN, _say39)
+        check("换成不存在的卡会说明白", "没换成" in _said39[0], str(_said39)[:120])
+        _said39.clear()
+        await bot.handle_persona_command("/人设 换 lengdan", True, 999, ADMIN, _say39)
+        check("按群绑卡生效（群键 g999）",
+              bot.PERSONA.resolve("g999") == "lengdan", bot.PERSONA.resolve("g999"))
+        check("绑定落盘在局部目录里（没写进仓库）",
+              (_tmp39 / "persona_bindings.json").exists())
+        check("别的群不受影响", bot.PERSONA.resolve("g1000") == "xuxingjiu")
+        _said39.clear()
+        await bot.handle_persona_command("/人设 默认", True, 999, ADMIN, _say39)
+        check("改回默认卡", bot.PERSONA.resolve("g999") == "xuxingjiu")
+        _said39.clear()
+        await bot.handle_persona_command("/人设 全局 lengdan", True, 999, ADMIN, _say39)
+        check("能改默认卡，且没单独绑的地方跟着变",
+              bot.PERSONA.default_id() == "lengdan"
+              and bot.PERSONA.resolve("g1000") == "lengdan")
+        # 退位：只验流程（真的 drop_config 会写仓库里的 config.json，测试里换成假的）
+        _dropped39: list[list[str]] = []
+        bot.drop_config = lambda paths: (_dropped39.append(list(paths)), list(paths))[1]
+        _said39.clear()
+        await bot.handle_persona_command("/人设 退位", True, 999, ADMIN, _say39)
+        check("退位把该删的老键路径都交出去了",
+              _dropped39 and _dropped39[0] == bot.PERSONA_LEGACY_PATHS,
+              str(_dropped39)[:160])
+        check("老键路径含提示词老键与 sd 段的形象键",
+              "persona" in bot.PERSONA_LEGACY_PATHS
+              and "sd.character_tags" in bot.PERSONA_LEGACY_PATHS,
+              str(bot.PERSONA_LEGACY_PATHS))
+        _said39.clear()
+        check("不认识的用法会给出用法说明",
+              await bot.handle_persona_command("/人设 乱写", True, 999, ADMIN, _say39) is True
+              and "/人设 换" in _said39[0], str(_said39)[:120])
+    finally:
+        bot.PERSONA = _real_p39
+        bot.drop_config = _real_drop39
+        _sh39.rmtree(_tmp39, ignore_errors=True)
+
     # ── 尾部污染自检：【24】~【37】是在隔离撤销之后跑的，得单独复核一遍 ──
     fp_tail = state_fingerprint()
     changed_tail = [k for k in _FP_TAIL if _FP_TAIL[k] != fp_tail.get(k)]

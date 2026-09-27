@@ -264,6 +264,7 @@
       "qzone_draw": true,
       "ban": true,
       "clear": true,
+      "persona": true,
       "qzone_like": false,
       "qzone_read": false,
       "search": false,
