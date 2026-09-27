@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -360,7 +361,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--deep", action="store_true", help="额外探测本地生成后端（可能耗时）")
     args = ap.parse_args(argv)
 
-    items = run(deep=args.deep)
+    # --json 那份是给脚本 / CI 读的，必须是**纯 JSON**。bot 是在 run() 里才 import 的，
+    # 一 import 就把日志处理器挂到"当时的 sys.stdout"上 —— 机器上已经有 config.json 时
+    # 它会打一行 providers 迁移提醒，下游 json.load 直接抛 "Extra data"。
+    # 这里把 run() 期间的 stdout 整体让给 stderr：bot 拿到的 stdout 就是 stderr，
+    # 日志照旧看得见，JSON 干净。（裸仓库里不报，所以只有配过的机器才踩得到。）
+    if args.json:
+        with contextlib.redirect_stdout(sys.stderr):
+            items = run(deep=args.deep)
+    else:
+        items = run(deep=args.deep)
     n_err = sum(1 for x in items if x["level"] == ERR)
     n_warn = sum(1 for x in items if x["level"] == WARN)
 

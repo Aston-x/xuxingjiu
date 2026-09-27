@@ -77,6 +77,37 @@ jobs:
           [ -x "$PY" ] || PY=.venv/Scripts/python.exe
           "$PY" test_imagegen.py
 
+      # 体检的 --json 是给脚本 / CI 读的。机器上有了 config.json 之后，bot 一 import
+      # 就会打一行 providers 迁移提醒 —— 它挂在 sys.stdout 上，于是输出成了
+      # "一行日志 + 一份 JSON"，下游 json.load 抛 "Extra data"。裸仓库里不报，
+      # 所以这条必须**带着 config.json** 跑。放这个 workflow 是因为它装了依赖：
+      # 没依赖时 import bot 直接失败，那条提醒根本不会出现，测了等于没测。
+      - name: 体检的 --json 在"已经配过"的机器上也是纯 JSON
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        working-directory: qqbot
+        shell: bash
+        env:
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          PY=.venv/bin/python
+          [ -x "$PY" ] || PY=.venv/Scripts/python.exe
+          cp config.example.json config.json      # config.json 是 gitignore 的，不弄脏工作区
+          set +e
+          "$PY" tools/doctor.py --json > doctor.json 2>/dev/null
+          rc=$?
+          set -e
+          echo "doctor 退出码 = $rc（配过之后仍允许非 0：还有该填的没填）"
+          "$PY" - <<'PY'
+          import json
+          raw = open("doctor.json", encoding="utf-8").read()
+          # 先看开头：日志混进来时那里是个时间戳，这比 json.load 的报错好定位
+          assert raw.lstrip().startswith("{"), "stdout 不是纯 JSON，开头是：" + raw[:120]
+          d = json.loads(raw)
+          assert d["checks"], "doctor 没输出任何检查项"
+          print("纯 JSON，检查项", len(d["checks"]), "项")
+          PY
+          rm -f config.json doctor.json
+
   bridge:
     name: qzone-bridge
     runs-on: ubuntu-latest
