@@ -52,16 +52,22 @@ scan_history() {
   fi
 }
 
-# 共用的白名单，分三类，每一类都注明了为什么可以放过：
+# 共用的白名单，分四类，每一类都注明了为什么可以放过：
 #   · 合成占位值：10001 起的机器人号、11000000xx 的人造号、999000xxx 的测试群号、
 #     重复数字与顺子的样例号（111111 / 888888888 / 876543210 这种一眼假）。
 #   · 公开常量：QQ 空间的 **appid** 是公开的，谁抓包都是同一个数，不是个人标识。
 #   · 示例时间戳：文档接口示例里的 Unix 时间戳，17 开头，不是号。
+#   · 提交头：GitHub 的 noreply 邮箱写成「用户 ID+用户名@users.noreply.github.com」，
+#     `git log -p` 会把 Author 行一起打出来，那串 ID 必然撞上「9~11 位、2-9 开头」。
+#     它是公开元数据（每个提交里都有），不是谁的个人标识，所以只在扫历史时放过。
+#     写成不含具体数字的通配式：写死那个 ID 的话，这段白名单自己会被工作区扫描扫出来。
 ALLOW_SYNTHETIC='1000[0-9]|1100000[0-9]{3}|999000[0-9]{3}|111111|222222|333333|123456789|888888888|999999999|876543210'
 ALLOW_PUBLIC='549000912'
 ALLOW_PLACEHOLDER='示例|example|placeholder|REDACTED|占位|xxx|yyy|XXX|zzz|你的QQ|oXXXX'
 ALLOW_STAMPS='1709012345|1700000000|1700000001|1700000002|1770380359|1774000000|1774139725|1770[0-9]{6}|17[0-9]{8}'
+ALLOW_META='[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com'
 ALLOW_QQ="$ALLOW_SYNTHETIC|$ALLOW_PUBLIC|$ALLOW_PLACEHOLDER"
+ALLOW_HIST="$ALLOW_QQ|$ALLOW_META"
 
 echo "发布前自查（工作区）"
 echo "----------------------------------------"
@@ -181,15 +187,15 @@ scan_history "历史里没有密钥 / Cookie" \
 #    一直躺到 v1.1.0。所以这段扫的两条规则必须和工作区那两条**完全一致**。
 scan_history "历史里没有真实 QQ 号（10 位 1[3-9] 开头）" \
      '(^|[^0-9A-Za-z_.])(1[3-9][0-9]{8})([^0-9A-Za-z_.]|$)' \
-     "$ALLOW_QQ|$ALLOW_STAMPS"
+     "$ALLOW_HIST|$ALLOW_STAMPS"
 
 scan_history "历史里没有真实 QQ 号（9~11 位 2-9 开头）" \
      '(^|[^0-9A-Za-z_.])([2-9][0-9]{8,10})([^0-9A-Za-z_.]|$)' \
-     "$ALLOW_QQ"
+     "$ALLOW_HIST"
 
 scan_history "历史里没有 QQ 语境里的真实短号" \
      '(uin|UIN|nameCard|feed)[="_:]*o?([1-9][0-9]{4,10})' \
-     "$ALLOW_QQ"
+     "$ALLOW_HIST"
 
 echo "----------------------------------------"
 if [ "$FAIL" = "0" ]; then
