@@ -33,7 +33,7 @@
 set -euo pipefail
 
 SCHEMA=1
-REPO_URL="${REPO_URL:-https://github.com/your-name/xuxingjiu.git}"
+REPO_URL="${REPO_URL:-https://github.com/Aston-x/xuxingjiu.git}"
 TARGET_DIR="${TARGET_DIR:-$PWD/xuxingjiu}"
 
 CHECK=0; DETECT=0; JSON=0; YES=0; NO_SYSTEM=0; DRY=0; WITH_BROWSER=0; ALLOW_DOWNLOAD=0
@@ -69,7 +69,10 @@ readonly_maybe() { [ "$CHECK" = 1 ] || [ "$DETECT" = 1 ] || [ "$DRY" = 1 ]; }
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
 warn() { printf '  ⚠️  %s\n' "$*"; }
-die()  { printf '  ❌ %s\n' "$*" >&2; exit 1; }
+# 退出码约定：0 = 一切就绪；1 = 跑完了但只有警告（--check / --detect 下没有 venv 就是这样，
+# CI 按「正常」处理）；2 = 有错误 —— 要么中途停了（die），要么体检报了 [xx]（doctor 的约定
+# 也是 0/1/2）。把 1 和 2 分开，是为了别把「跑不下去」说成「只是有警告」。
+die()  { printf '  ❌ %s\n' "$*" >&2; exit 2; }
 note() { printf '     %s\n' "$*"; }
 # 一条「本该执行的动作」：--dry-run 时只打印
 mut() {
@@ -560,7 +563,15 @@ else
   fi
   if command -v git >/dev/null 2>&1; then
     printf '  → git clone %s %s\n' "$REPO_URL" "$TARGET_DIR"
-    mut git clone --depth 1 "$REPO_URL" "$TARGET_DIR"
+    # clone 失败必须当场停、当场说清。以前这里不查返回值：仓库地址写错时
+    # git 报「Repository not found」，脚本却接着打一句「已 clone 到 … / [ok]」，
+    # 一直走到下一步「缺 requirements.txt」才报错 —— 报错点离原因隔了七步。
+    # （只读模式下 mut 只打印不执行、返回 0，不会误判。）
+    if ! mut git clone --depth 1 "$REPO_URL" "$TARGET_DIR"; then
+      die "clone 失败：$REPO_URL
+     换个地址：REPO_URL=<你的地址> bash install.sh
+     网络连不上 GitHub 就先手动下载 Release 里的源码包解压，再在本目录里跑本脚本"
+    fi
     ROOT="$TARGET_DIR"
     ok "已 clone 到 $ROOT"
   else

@@ -76,8 +76,10 @@ def main() -> int:
             if pathlib.Path(rel).suffix.lower() == ".txt":
                 data = _text_with_bom(data)
             z.writestr(f"{PREFIX}/{name}", data)
-        # 附一份源码包地址的占位说明，避免用户拿到 zip 不知道去哪 clone
-        src_txt = ("源码地址：请填入你的仓库 URL\n"
+        # 源码地址。这个值必须和 install.sh / install.ps1 里的默认值一致 ——
+        # tools/compat_check.py 会盯着三份一样，免得包发出去还在 clone your-name。
+        repo_url = "https://github.com/Aston-x/xuxingjiu.git"
+        src_txt = (f"源码地址：{repo_url}\n"
                    "（install.sh / install.ps1 的 REPO_URL 默认值就是它）\n")
         z.writestr(f"{PREFIX}/SOURCE.txt",
                    _text_with_bom(src_txt.encode("utf-8")))

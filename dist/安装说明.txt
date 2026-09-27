@@ -38,8 +38,8 @@
     --with-browser    额外装 Playwright chromium（约 150 MB）
 
   想装到别处 / 换仓库地址：
-    Windows:  powershell -ExecutionPolicy Bypass -File install.ps1 -TargetDir D:\bot -RepoUrl <你的仓库>
-    POSIX:    TARGET_DIR=/opt/bot REPO_URL=<你的仓库> bash install.sh
+    Windows:  powershell -ExecutionPolicy Bypass -File install.ps1 -TargetDir D:\bot -RepoUrl https://github.com/Aston-x/xuxingjiu.git
+    POSIX:    TARGET_DIR=/opt/bot REPO_URL=https://github.com/Aston-x/xuxingjiu.git bash install.sh
 
 装完之后
 --------
@@ -73,4 +73,4 @@
 
 项目主页 / 问题反馈
 -------------------
-  （把你仓库的地址写在这里）
+  https://github.com/Aston-x/xuxingjiu

@@ -133,6 +133,37 @@ def main() -> int:
     check("install.bat 把参数透传给 install.ps1（%*）", bat_fwd,
           "在调用 install.ps1 的那行末尾加上 %*")
 
+    # 10) 默认仓库地址：三处都要写死，而且三处要一样，不能是占位符。
+    #     这条真出过事 —— 包发出去之后用户双击安装，脚本跑去 clone
+    #     github.com/your-name/xuxingjiu，甩一句「Repository not found」。
+    #     install.sh / install.ps1 / make_dist.py 的 SOURCE.txt 各有一份默认值，
+    #     只改其中一份就会指错地方，所以让机器盯着三份。
+    sh_url = re.search(r'REPO_URL="\$\{REPO_URL:-([^}"]+)\}"', sh.read_text(encoding="utf-8"))
+    ps_url = re.search(r'\$RepoUrl\s*=\s*"([^"]+)"', ps1.read_text(encoding="utf-8-sig"))
+    dist_py = ROOT / "tools" / "make_dist.py"
+    md_url = re.search(r'repo_url\s*=\s*"([^"]+)"',
+                       dist_py.read_text(encoding="utf-8")) if dist_py.exists() else None
+    urls = {
+        "install.sh": sh_url.group(1) if sh_url else "",
+        "install.ps1": ps_url.group(1) if ps_url else "",
+        "make_dist.py": md_url.group(1) if md_url else "",
+    }
+    missing_url = [k for k, v in urls.items() if not v]
+    check("默认仓库地址三处都写死了", not missing_url, f"没解析到：{missing_url}")
+    if not missing_url:
+        check("三处默认仓库地址一致", len(set(urls.values())) == 1,
+              "不一致：" + " / ".join(f"{k}={v}" for k, v in urls.items()))
+        placeholder = sorted({v for v in urls.values()
+                              if re.search(r"your-name|your_name|example\.com|<|TODO", v)})
+        check("默认仓库地址不是占位符", not placeholder, f"还是占位符：{placeholder}")
+
+    # 11) clone 失败必须当场停。原生命令失败在 PowerShell 里不抛异常，
+    #     不看 $LASTEXITCODE 的话，clone 挂了照样报 [ok]，
+    #     然后一路走到「缺 requirements.txt」才露馅 —— 报错点离原因隔了七步。
+    ps_text = ps1.read_text(encoding="utf-8-sig")
+    check("install.ps1 在 clone 后检查了 $LASTEXITCODE", "$LASTEXITCODE -ne 0" in ps_text,
+          "clone 之后加：if (-not $ReadOnlyMode -and $LASTEXITCODE -ne 0) { Die ... }")
+
     print()
     if FAILS:
         print(f"兼容性守卫发现 {len(FAILS)} 处违规：")

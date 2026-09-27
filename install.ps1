@@ -46,7 +46,7 @@ param(
   [switch]$AllowDownload,
   [ValidateSet("auto", "off", "tuna", "aliyun")]
   [string]$Mirror = "auto",
-  [string]$RepoUrl = "https://github.com/your-name/xuxingjiu.git",
+  [string]$RepoUrl = "https://github.com/Aston-x/xuxingjiu.git",
   [string]$TargetDir = ""
 )
 
@@ -56,7 +56,10 @@ $Schema = 1
 function Say($m)  { Write-Host "`n$m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "  [!!] $m" -ForegroundColor Yellow }
-function Die($m)  { Write-Host "  [xx] $m" -ForegroundColor Red; exit 1 }
+# 退出码约定同 install.sh：0 就绪 / 1 只有警告 / 2 有错误（中途停了，或体检报 [xx]，
+# doctor.py 自己的约定也是 0/1/2）。分成两档是为了让 install.bat 能把
+# 「只是有警告」和「有错误」说成两句不同的话，双击进来的用户才不会把 [xx] 当成温馨提示。
+function Die($m)  { Write-Host "  [xx] $m" -ForegroundColor Red; exit 2 }
 function Note($m) { Write-Host "     $m" }
 
 # 只读模式：一个文件都不许动
@@ -540,7 +543,15 @@ if (Test-Path (Join-Path $SelfDir "qqbot\bot.py")) {
   }
   if (HasCmd "git") {
     Write-Host "  -> git clone $RepoUrl $TargetDir"
+    # 原生命令失败不会抛异常，只能看 $LASTEXITCODE。以前这里不查：仓库地址写错时
+    # git 报「Repository not found」，脚本却接着打一句 [ok] 已 clone 到 …，
+    # 一直走到下一步「缺 requirements.txt」才报错，报错点离原因隔了七步。
+    # 先归零：只读模式下 Mut 不会真跑，免得读到上一条命令留下的值。
+    $global:LASTEXITCODE = 0
     Mut { & git clone --depth 1 $RepoUrl $TargetDir } "git clone $RepoUrl $TargetDir"
+    if ((-not $ReadOnlyMode) -and ($global:LASTEXITCODE -ne 0)) {
+      Die "clone 失败（git 退出码 $global:LASTEXITCODE）：$RepoUrl`n     换个地址：-RepoUrl <你的地址>`n     网络连不上 GitHub 就先手动下载 Release 里的源码包解压，再在本目录里跑本脚本"
+    }
     $Root = $TargetDir
     Ok "已 clone 到 $Root"
   } else {
