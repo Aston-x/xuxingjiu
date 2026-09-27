@@ -335,7 +335,7 @@ POST .../taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds?g_tk={g_tk}
 
 ## 这套东西为什么长这样
 
-`CLAUDE.md` 里两句话把背景交代得很清楚：`get_like_list` 这类 PC 端点「often empty/500 in probes」，评论和详情「often 500/empty, mobile detail often 404」，所以数据源整体偏向 `feeds3_html_more`。
+背景在 [api-probe-results.md](api-probe-results.md) 与 [fallback-strategy.md](fallback-strategy.md) 里：`get_like_list` 这类 PC 端点常为空或 500，评论和详情多为 500 空体或 404，所以数据源整体偏向 `feeds3_html_more`。
 
 这解释了这个模块的形状——写操作还留在老 JSON 接口上（它们还能用），读操作全部重写成「拉 HTML 再解析」。代价是评论 id 变成了帖内序号、点赞列表可能和计数对不上，这些都是解析 HTML 换来的。
 

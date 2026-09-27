@@ -33,9 +33,7 @@ npm run verify:tools   # 全量 action 对齐
 | `emotion_cgi_getdetailv6` | POST | taotao.qzone.qq.com | HTTP 500 且空体 | 2026-03-22 | `doc/emotion-api.md:115` |
 | `emotion_cgi_getdetailv6` | GET | taotao.qzone.qq.com | HTTP 500 且空体 | 2026-03-22 | `doc/emotion-api.md:115` |
 | `emotion_cgi_getcmtreply_v6` | POST/GET | taotao.qzone.qq.com | 多已不可用，无逐条状态码 | 2026-03 | `doc/fallback-strategy.md:8` |
-| `get_like_list` | GET | taotao.qzone.qq.com | 常为空或 500，无逐条状态码与日期 | 无 | `CLAUDE.md:42` |
-| `emotion_cgi_msglist_v6` 限流 | - | - | 线上仍被限流，`code=-10000` | 无 | `CLAUDE.md:40` |
-| 一批 PC/mobile JSON 接口 | - | - | 实测返回 `-10000`、HTTP 500 空体或 404 | 2026-03 | `CLAUDE.md:74` |
+| `get_like_list` | GET | taotao.qzone.qq.com | 常为空或 500；仓库里没留下这次探测的原始记录 | 无 | 结论落在实现上：`src/qzone/client.ts` 的 `getLikeListBestEffort` 只走 feeds3，另见 `doc/fallback-strategy.md:80` |
 | `feeds3_html_more` | GET | ic2.qzone.qq.com | 可靠，是当前主数据源 | 无 | `doc/feeds3-parser.md:5`、`doc/compatibility-matrix.md:11` |
 
 `feeds3_html_more` 那行没写日期，因为文档里找不到一句带日期的单独判定，它是从「当前主数据源」这个结论反推出来的（`doc/feeds3-parser.md:9`）。
@@ -111,7 +109,7 @@ npm run verify:tools   # 全量 action 对齐
 按「本来以为有、仓库里其实没有」列。
 
 - 评论接口的逐条状态码。`getcmtreply_v6` 与 mobile `get_comment_list` 只有「实机 2026-03 多已不可用」一句总述（`doc/fallback-strategy.md:8`），没有 HTTP 码，没有 body 长度，没有具体日期。
-- `get_like_list` 的探测记录。只有「常为空或 500」（`CLAUDE.md:42`），没有日期，没有 `code`。
+- `get_like_list` 的探测记录。仓库里只留下「常为空或 500」这一句结论，没有日期、没有 `code`，原始响应也没留。代码是照着这个结论写的（`src/qzone/client.ts` 的 `getLikeListBestEffort` 只走 feeds3），但结论本身追不回去了。
 - `feeds_html_act_all` 的独立探测结果。它在降级链里被提到多次（`doc/fallback-strategy.md:8`、`:76`），但没有一条带状态码的实测。
 - mobile `/get_comment_list` 与 `/del_comment` 的「不稳定」。`compatibility-matrix.md:55`、`:56` 只给了两个字，没有可复现的判定条件。
 - 留言板。一次包都没抓过，见 [board-api.md](board-api.md)。

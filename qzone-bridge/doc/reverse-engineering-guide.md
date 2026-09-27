@@ -69,7 +69,7 @@ npm run probe:doc          # scripts/probe-doc-endpoints.ts
 
 请求统一走 `client.request` / `requestParsed`，最终落到 `requestLayer.parseRawResponse()`：先做 HTTP 判断，再扫反爬正则，再 JSONP 剥壳，最后提业务码。反爬正则在 `src/qzone/config/constants.ts:34-44`，一共 9 条（`系统繁忙`、`访问过于频繁`、`安全验证`、`请输入验证码`、`tcaptcha`、`需要登录`、`请先登录`、`g_isSurvey`，加一条主页脚本特征）。业务码集合也是常量：认证失败 `{-3, -100, -3000, -10001, -10006}`，限流 `{-10000, -2}`。新端点如果带自己的错误码，先想清楚能不能并进这两个集合，而不是就地写一堆 if。
 
-JSON cgi 和 HTML 解析怎么选，由实测决定，不看喜好。PC 端那批 JSON 接口大量返回限流码、500 空体或 404，而 `feeds3_html_more` 只要 Cookie 加 g_tk 就能出数据，所以现在的说说列表、内嵌评论、内嵌点赞实际都挂在 feeds3 上（[feeds3-parser.md](feeds3-parser.md)、[CLAUDE.md](../CLAUDE.md)）。选路顺序是：先试 JSON cgi，能稳定返回就用它，字段全、解析简单；一被限流或空体，切 HTML 那条路。别反过来，HTML 解析的代价高得多。
+JSON cgi 和 HTML 解析怎么选，由实测决定，不看喜好。PC 端那批 JSON 接口大量返回限流码、500 空体或 404，而 `feeds3_html_more` 只要 Cookie 加 g_tk 就能出数据，所以现在的说说列表、内嵌评论、内嵌点赞实际都挂在 feeds3 上（[feeds3-parser.md](feeds3-parser.md)、[api-probe-results.md](api-probe-results.md)）。选路顺序是：先试 JSON cgi，能稳定返回就用它，字段全、解析简单；一被限流或空体，切 HTML 那条路。别反过来，HTML 解析的代价高得多。
 
 HTML 解析的成型套路，实现都在 `src/qzone/feeds3/`，对外由 `src/qzone/feeds3Parser.ts` 这个 barrel 统一导出：
 
