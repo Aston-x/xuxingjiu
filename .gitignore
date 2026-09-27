@@ -1,0 +1,44 @@
+# ── 依赖与虚拟环境 ──
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+# 注意：不能整目录忽略 dist/，因为 dist/安装说明.txt 是要进仓库的（安装包里那份说明）。
+# 正确写法是「忽略内容、再单独放行那一个文件」。
+dist/*
+!dist/安装说明.txt
+build/
+
+# ── 运行时产物 ──
+*.log
+*.pid
+state/
+_backup/
+_sdtry/
+generated/
+test_cache/
+cache/
+logs/
+
+# ── 凭据与本地配置（务必不要提交） ──
+.env
+.env.*
+# .env.example 是模板，必须随仓库发布；真实 .env 才不能提交
+!.env.example
+config.json
+config.json.bak
+*.bak
+
+# ── 本地中间件 ──
+_patch/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── 打包产物 ──
+# 安装包 zip 是"发布资产"，应该挂到 GitHub Release 的 Assets 上，不进版本库
+dist/*.zip
+tools/doctor.json

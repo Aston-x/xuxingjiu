@@ -1,0 +1,20 @@
+# 统一换行符：仓库里一律 LF，检出时也不要自动转成 CRLF
+# （否则 Windows 上克隆下来满屏 "LF will be replaced by CRLF" 警告，
+#   而且跨平台协作时 diff 会失真）
+* text=auto eol=lf
+
+# 批处理必须 CRLF，某些老 cmd 解析器对 LF 的 .bat 会出问题
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：别做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+
+# 这些文件 diff 没意义
+package-lock.json -diff linguist-generated
