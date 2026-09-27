@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-name/xuxingjiu"
+Homepage = "https://github.com/Aston-x/xuxingjiu"
 
 [tool.setuptools]
 # 这是一个脚本式项目（入口是 bot.py），不打包成 wheel；这里只用于声明元数据

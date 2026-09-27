@@ -19,7 +19,7 @@
 
 [Unit]
 Description=Xuxingjiu QQ bot (qqbot)
-Documentation=https://github.com/your-name/xuxingjiu
+Documentation=https://github.com/Aston-x/xuxingjiu
 # 空间桥接是另一个服务/进程；这里只声明顺序意图，不强制依赖
 After=network-online.target
 Wants=network-online.target
