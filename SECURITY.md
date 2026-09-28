@@ -5,7 +5,7 @@
 **请不要用公开 issue 报安全问题。**
 
 优先用 GitHub 的私密渠道：仓库页面 → **Security** → **Report a vulnerability**
-（私密漏洞报告）。如果不能使用，请给维护者发邮件（把 `SECURITY.md` 里的邮箱换成你的）。
+（私密漏洞报告）。如果不能使用，请给维护者发邮件（306994794+Aston-x@users.noreply.github.com）。
 
 请尽量包含：
 
