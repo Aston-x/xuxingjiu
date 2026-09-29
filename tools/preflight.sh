@@ -57,17 +57,22 @@ scan_history() {
 #     重复数字与顺子的样例号（111111 / 888888888 / 876543210 这种一眼假）。
 #   · 公开常量：QQ 空间的 **appid** 是公开的，谁抓包都是同一个数，不是个人标识。
 #   · 示例时间戳：文档接口示例里的 Unix 时间戳，17 开头，不是号。
-#   · 提交头：GitHub 的 noreply 邮箱写成「用户 ID+用户名@users.noreply.github.com」，
-#     `git log -p` 会把 Author 行一起打出来，那串 ID 必然撞上「9~11 位、2-9 开头」。
-#     它是公开元数据（每个提交里都有），不是谁的个人标识，所以只在扫历史时放过。
-#     写成不含具体数字的通配式：写死那个 ID 的话，这段白名单自己会被工作区扫描扫出来。
+#   · GitHub noreply 邮箱：写成「用户 ID+用户名@users.noreply.github.com」。
+#     那串 ID 必然撞上「9~11 位、2-9 开头」（第一次撞是在 SECURITY.md 的漏洞报告邮箱上，
+#     preflight 直接飘红，但其实是个纯假阳性）。它是公开元数据 —— 每个提交里都有，
+#     SECURITY.md 里也是公开给所有人看的 —— 不是谁的个人标识。
+#     ⚠️ 所以**工作区扫描和历史扫描都要放过**：早先只在扫历史时放过，
+#     结果 SECURITY.md 一加这行邮箱，工作区那一路就红了。
+#     写成不含具体数字的通配式：写死那个 ID 的话，这段白名单自己会被工作区扫描扫出来
+#     （顺带一提，它也不会自匹配 —— 文件里写的是 `users\.noreply\.github\.com`，
+#     带反斜杠，对不上正则里那个没有反斜杠的形式）。
 ALLOW_SYNTHETIC='1000[0-9]|1100000[0-9]{3}|999000[0-9]{3}|111111|222222|333333|123456789|888888888|999999999|876543210'
 ALLOW_PUBLIC='549000912'
 ALLOW_PLACEHOLDER='示例|example|placeholder|REDACTED|占位|xxx|yyy|XXX|zzz|你的QQ|oXXXX'
 ALLOW_STAMPS='1709012345|1700000000|1700000001|1700000002|1770380359|1774000000|1774139725|1770[0-9]{6}|17[0-9]{8}'
 ALLOW_META='[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com'
-ALLOW_QQ="$ALLOW_SYNTHETIC|$ALLOW_PUBLIC|$ALLOW_PLACEHOLDER"
-ALLOW_HIST="$ALLOW_QQ|$ALLOW_META"
+ALLOW_QQ="$ALLOW_SYNTHETIC|$ALLOW_PUBLIC|$ALLOW_PLACEHOLDER|$ALLOW_META"
+ALLOW_HIST="$ALLOW_QQ"
 
 echo "发布前自查（工作区）"
 echo "----------------------------------------"
